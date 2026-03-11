@@ -20,9 +20,17 @@ type InviteRecord = {
   status: "pending" | "accepted" | "declined";
 };
 
+type SessionRecord = {
+  sessionId: string;
+  userIds: [string, string];
+  activityType: "none";
+  status: "active";
+};
+
 const invitesById = new Map<string, InviteRecord>();
 const usersByUserId = new Map<string, UserRecord>();
 const userIdBySocketId = new Map<string, string>();
+const sessionsById = new Map<string, SessionRecord>();
 
 const app = express();
 app.use(cors());
@@ -102,25 +110,63 @@ io.on("connection", (socket) => {
   });
 });
 
-  socket.on("INVITE_ACCEPT", (payload: { inviteId: string }) => {
-    console.log("INVITE_ACCEPT received", payload, "from socket", socket.id);
+socket.on("INVITE_ACCEPT", (payload: { inviteId: string }) => {
+  console.log("INVITE_ACCEPT received", payload, "from socket", socket.id);
 
-    const invite = invitesById.get(payload.inviteId);
-    console.log("INVITE_ACCEPT invite lookup:", invite);
+  const invite = invitesById.get(payload.inviteId);
+  console.log("INVITE_ACCEPT invite lookup:", invite);
 
-    if (!invite || invite.status !== "pending") return;
+  if (!invite || invite.status !== "pending") return;
 
-    invite.status = "accepted";
-    invitesById.set(invite.inviteId, invite);
+  invite.status = "accepted";
+  invitesById.set(invite.inviteId, invite);
 
-    const fromUser = usersByUserId.get(invite.fromUserId);
-    console.log("INVITE_ACCEPT fromUser:", fromUser);
+  const fromUser = usersByUserId.get(invite.fromUserId);
+  const toUser = usersByUserId.get(invite.toUserId);
 
-    if (fromUser) {
-      io.to(fromUser.socketId).emit("INVITE_RESULT", { inviteId: invite.inviteId, result: "success" });
-      console.log("INVITE_RESULT emitted to", fromUser.socketId);
-    }
+  console.log("INVITE_ACCEPT fromUser:", fromUser);
+  console.log("INVITE_ACCEPT toUser:", toUser);
+
+  if (!fromUser || !toUser) return;
+
+  const sessionId = `${invite.fromUserId}:${invite.toUserId}:${Date.now()}`;
+  const roomName = `session:${sessionId}`;
+
+  const session: SessionRecord = {
+    sessionId,
+    userIds: [invite.fromUserId, invite.toUserId],
+    activityType: "none",
+    status: "active",
+  };
+
+  sessionsById.set(sessionId, session);
+
+
+
+  io.sockets.sockets.get(fromUser.socketId)?.join(roomName);
+  io.sockets.sockets.get(toUser.socketId)?.join(roomName);
+
+  io.to(fromUser.socketId).emit("INVITE_RESULT", {
+    inviteId: invite.inviteId,
+    result: "success",
   });
+
+  io.to(fromUser.socketId).emit("SESSION_STARTED", {
+    sessionId,
+    peerUserId: toUser.userId,
+    peerDisplayName: toUser.displayName,
+    activityType: "none",
+  });
+
+  io.to(toUser.socketId).emit("SESSION_STARTED", {
+    sessionId,
+    peerUserId: fromUser.userId,
+    peerDisplayName: fromUser.displayName,
+    activityType: "none",
+  });
+
+  console.log("SESSION_STARTED", session);
+});
 
   socket.on("INVITE_DECLINE", (payload: { inviteId: string }) => {
     console.log("INVITE_DECLINE received", payload, "from socket", socket.id);

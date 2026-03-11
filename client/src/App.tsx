@@ -17,6 +17,13 @@ export default function App() {
     fromDisplayName: string;
   } | null>(null);
   const [inviteStatus, setInviteStatus] = useState<string>("");
+  const [session, setSession] = useState<{
+      sessionId: string;
+      peerUserId: string;
+      peerDisplayName: string;
+      activityType: string;
+    } | null>(null);
+
 
 
   const socket: Socket = useMemo(() => {
@@ -37,11 +44,23 @@ export default function App() {
       setInviteStatus(`Invite ${payload.result} (${payload.inviteId})`);
     };
 
+
+    const onSessionStarted = (payload: {
+      sessionId: string;
+      peerUserId: string;
+      peerDisplayName: string;
+      activityType: string;
+    }) => {
+      setSession(payload);
+    };
+
     socket.on("connect", onConnect);
     socket.on("LOBBY_STATE", onLobbyState);
     socket.on("IDENTIFIED", onIdentified);
     socket.on("INVITE_RECEIVED", onInviteReceived);
     socket.on("INVITE_RESULT", onInviteResult);
+
+    socket.on("SESSION_STARTED", onSessionStarted);
 
     socket.on("connect_error", (err) => console.log("connect_error", err.message));
     socket.on("disconnect", (reason) => console.log("disconnected:", reason));
@@ -54,9 +73,22 @@ export default function App() {
       socket.off("INVITE_RESULT", onInviteResult);
       socket.off("connect_error");
       socket.off("disconnect");
+      socket.off("SESSION_STARTED", onSessionStarted);
     };
 }, [socket]);
 
+
+  if (session) {
+    return (
+      <div style={{ padding: 16, fontFamily: "sans-serif" }}>
+        <h2>Breakroom Session</h2>
+        <p>Session ID: {session.sessionId}</p>
+        <p>With: {session.peerDisplayName}</p>
+        <p>Activity: {session.activityType}</p>
+      </div>
+    );
+  }
+  
   return (
     <div style={{ padding: 16, fontFamily: "sans-serif" }}>
       <h2>Breakroom Lobby</h2>
