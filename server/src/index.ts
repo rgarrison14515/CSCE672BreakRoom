@@ -6,7 +6,7 @@ import { Server } from "socket.io";
 type PublicUser = {
   userId: string;
   displayName: string;
-  presence: "in_lobby";
+  presence: "in_lobby" | "in_session";
 };
 
 type UserRecord = PublicUser & {
@@ -55,6 +55,16 @@ function broadcastLobby() {
   io.to("lobby").emit("LOBBY_STATE", lobbyState());
 }
 
+
+function findActiveSessionByUserId(userId: string): SessionRecord | undefined {
+  for (const session of sessionsById.values()) {
+    if (session.status === "active" && session.userIds.includes(userId)) {
+      return session;
+    }
+  }
+  return undefined;
+}
+
 io.on("connection", (socket) => {
   console.log("connected", socket.id);
 
@@ -85,8 +95,8 @@ io.on("connection", (socket) => {
   if (!fromUserId) return;
 
   const toUser = usersByUserId.get(payload.toUserId);
-  if (!toUser) {
-    console.log("INVITE_SEND failed: target not found", payload.toUserId);
+  if (!toUser || toUser.presence !== "in_lobby") {
+    console.log("INVITE_SEND failed: target unavailable", payload.toUserId);
     return;
   }
 
@@ -151,6 +161,9 @@ socket.on("INVITE_ACCEPT", (payload: { inviteId: string }) => {
     result: "success",
   });
 
+  fromUser.presence = "in_session";
+  toUser.presence = "in_session";
+
   io.to(fromUser.socketId).emit("SESSION_STARTED", {
     sessionId,
     peerUserId: toUser.userId,
@@ -164,6 +177,8 @@ socket.on("INVITE_ACCEPT", (payload: { inviteId: string }) => {
     peerDisplayName: fromUser.displayName,
     activityType: "none",
   });
+
+  broadcastLobby();
 
   console.log("SESSION_STARTED", session);
 });
@@ -191,12 +206,49 @@ socket.on("INVITE_ACCEPT", (payload: { inviteId: string }) => {
   socket.on("disconnect", () => {
     const userId = userIdBySocketId.get(socket.id);
 
-   console.log("disconnect", socket.id, "userId:", userId); // logging for dev purposes
+    console.log("disconnect", socket.id, "userId:", userId);
 
-    if (userId) {
+    if (!userId) {
+      broadcastLobby();
+      return;
+    }
+
+    const activeSession = findActiveSessionByUserId(userId);
+
+    if (activeSession) {
+      console.log("disconnect ended active session", activeSession.sessionId);
+
+      activeSession.status = "ended";
+      sessionsById.set(activeSession.sessionId, activeSession);
+
+      const [userAId, userBId] = activeSession.userIds;
+      const otherUserId = userAId === userId ? userBId : userAId;
+      const otherUser = usersByUserId.get(otherUserId);
+
+      const roomName = `session:${activeSession.sessionId}`;
+
+      // Remove disconnected user from tracking
       usersByUserId.delete(userId);
       userIdBySocketId.delete(socket.id);
+
+      // Notify and restore the other user
+      if (otherUser) {
+        otherUser.presence = "in_lobby";
+        io.sockets.sockets.get(otherUser.socketId)?.leave(roomName);
+        io.to(otherUser.socketId).emit("SESSION_ENDED", {
+          sessionId: activeSession.sessionId,
+        });
+      }
+
+      console.log("SESSION_ENDED due to disconnect", activeSession.sessionId);
+
+      sessionsById.delete(activeSession.sessionId);
+      broadcastLobby();
+      return;
     }
+
+    usersByUserId.delete(userId);
+    userIdBySocketId.delete(socket.id);
     broadcastLobby();
   });
 
@@ -231,7 +283,18 @@ socket.on("INVITE_ACCEPT", (payload: { inviteId: string }) => {
       });
     }
 
+    // mark both users back to in_lobby at end of session
+    if (userA) {
+      userA.presence = "in_lobby";
+    }
+
+    if (userB) {
+      userB.presence = "in_lobby";
+    }
+
     console.log("SESSION_ENDED", session.sessionId);
+
+    broadcastLobby();
 
     sessionsById.delete(session.sessionId);
   });

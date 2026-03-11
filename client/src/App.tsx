@@ -4,7 +4,7 @@ import { io, Socket } from "socket.io-client";
 type PublicUser = {
   userId: string;
   displayName: string;
-  presence: "in_lobby";
+  presence: "in_lobby" | "in_session";
 };
 
 export default function App() {
@@ -145,7 +145,7 @@ export default function App() {
       <ul>
         {users.map((u) => (
           <li key={u.userId}>
-            {u.displayName}
+            {u.displayName} ({u.presence})
             {u.userId !== myUserId && (
               <button
                 style={{ marginLeft: 8 }}
