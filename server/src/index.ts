@@ -24,7 +24,7 @@ type SessionRecord = {
   sessionId: string;
   userIds: [string, string];
   activityType: "none";
-  status: "active";
+  status: "active" | "ended";
 };
 
 const invitesById = new Map<string, InviteRecord>();
@@ -198,6 +198,42 @@ socket.on("INVITE_ACCEPT", (payload: { inviteId: string }) => {
       userIdBySocketId.delete(socket.id);
     }
     broadcastLobby();
+  });
+
+  socket.on("SESSION_LEAVE", (payload: { sessionId: string }) => {
+    console.log("SESSION_LEAVE received", payload, "from socket", socket.id);
+
+    const session = sessionsById.get(payload.sessionId);
+    console.log("SESSION_LEAVE session lookup:", session);
+
+    if (!session || session.status !== "active") return;
+
+    session.status = "ended";
+    sessionsById.set(session.sessionId, session);
+
+    const [userAId, userBId] = session.userIds;
+    const userA = usersByUserId.get(userAId);
+    const userB = usersByUserId.get(userBId);
+
+    const roomName = `session:${session.sessionId}`;
+
+    if (userA) {
+      io.sockets.sockets.get(userA.socketId)?.leave(roomName);
+      io.to(userA.socketId).emit("SESSION_ENDED", {
+        sessionId: session.sessionId,
+      });
+    }
+
+    if (userB) {
+      io.sockets.sockets.get(userB.socketId)?.leave(roomName);
+      io.to(userB.socketId).emit("SESSION_ENDED", {
+        sessionId: session.sessionId,
+      });
+    }
+
+    console.log("SESSION_ENDED", session.sessionId);
+
+    sessionsById.delete(session.sessionId);
   });
 });
 

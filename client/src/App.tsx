@@ -54,6 +54,10 @@ export default function App() {
       setSession(payload);
     };
 
+    const onSessionEnded = (payload: { sessionId: string }) => {
+      setSession(null);
+    };
+
     socket.on("connect", onConnect);
     socket.on("LOBBY_STATE", onLobbyState);
     socket.on("IDENTIFIED", onIdentified);
@@ -64,6 +68,7 @@ export default function App() {
 
     socket.on("connect_error", (err) => console.log("connect_error", err.message));
     socket.on("disconnect", (reason) => console.log("disconnected:", reason));
+    socket.on("SESSION_ENDED", onSessionEnded);
 
     return () => {
       socket.off("connect", onConnect);
@@ -74,21 +79,31 @@ export default function App() {
       socket.off("connect_error");
       socket.off("disconnect");
       socket.off("SESSION_STARTED", onSessionStarted);
+      socket.off("SESSION_ENDED", onSessionEnded);
     };
 }, [socket]);
 
 
   if (session) {
-    return (
-      <div style={{ padding: 16, fontFamily: "sans-serif" }}>
-        <h2>Breakroom Session</h2>
-        <p>Session ID: {session.sessionId}</p>
-        <p>With: {session.peerDisplayName}</p>
-        <p>Activity: {session.activityType}</p>
-      </div>
-    );
-  }
-  
+      return (
+        <div style={{ padding: 16, fontFamily: "sans-serif" }}>
+          <h2>Breakroom Session</h2>
+          <p>Session ID: {session.sessionId}</p>
+          <p>With: {session.peerDisplayName}</p>
+          <p>Activity: {session.activityType}</p>
+
+          <button
+            onClick={() => {
+              socket.emit("SESSION_LEAVE", { sessionId: session.sessionId });
+            }}
+            style={{ marginTop: 12 }}
+          >
+            Leave Session
+          </button>
+        </div>
+      );
+    }
+
   return (
     <div style={{ padding: 16, fontFamily: "sans-serif" }}>
       <h2>Breakroom Lobby</h2>
