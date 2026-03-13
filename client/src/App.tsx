@@ -19,11 +19,17 @@ export default function App() {
   } | null>(null);
   const [inviteStatus, setInviteStatus] = useState<string>("");
   const [session, setSession] = useState<{
-      sessionId: string;
-      peerUserId: string;
-      peerDisplayName: string;
-      activityType: string;
-    } | null>(null);
+    sessionId: string;
+    peerUserId: string;
+    peerDisplayName: string;
+    activityType: string;
+    playerColor: "w" | "b";
+  } | null>(null);
+
+  const [chessState, setChessState] = useState<{
+    fen: string;
+    turn: "w" | "b";
+  } | null>(null);
 
 
 
@@ -51,12 +57,25 @@ export default function App() {
       peerUserId: string;
       peerDisplayName: string;
       activityType: string;
+      playerColor: "w" | "b";
     }) => {
       setSession(payload);
     };
 
     const onSessionEnded = (payload: { sessionId: string }) => {
       setSession(null);
+      setChessState(null);
+    };
+
+    const onChessState = (payload: {
+      sessionId: string;
+      fen: string;
+      turn: "w" | "b";
+    }) => {
+      setChessState({
+        fen: payload.fen,
+        turn: payload.turn,
+      });
     };
 
     socket.on("connect", onConnect);
@@ -64,9 +83,8 @@ export default function App() {
     socket.on("IDENTIFIED", onIdentified);
     socket.on("INVITE_RECEIVED", onInviteReceived);
     socket.on("INVITE_RESULT", onInviteResult);
-
     socket.on("SESSION_STARTED", onSessionStarted);
-
+    socket.on("CHESS_STATE", onChessState);
     socket.on("connect_error", (err) => console.log("connect_error", err.message));
     socket.on("disconnect", (reason) => console.log("disconnected:", reason));
     socket.on("SESSION_ENDED", onSessionEnded);
@@ -80,6 +98,7 @@ export default function App() {
       socket.off("connect_error");
       socket.off("disconnect");
       socket.off("SESSION_STARTED", onSessionStarted);
+      socket.off("CHESS_STATE", onChessState);
       socket.off("SESSION_ENDED", onSessionEnded);
     };
 }, [socket]);
@@ -92,7 +111,21 @@ export default function App() {
           <p>Session ID: {session.sessionId}</p>
           <p>With: {session.peerDisplayName}</p>
           
-          <ChessActivity />
+          {chessState && (
+            <>
+              <p>Turn: {chessState.turn === "w" ? "White" : "Black"}</p>
+              <ChessActivity
+                fen={chessState.fen}
+                playerColor={session.playerColor}
+                onMove={(move) => {
+                  socket.emit("CHESS_MOVE", {
+                    sessionId: session.sessionId,
+                    ...move,
+                  });
+                }}
+/>
+            </>
+          )}
 
           <button
             onClick={() => {

@@ -2,6 +2,7 @@ import express from "express";
 import http from "http";
 import cors from "cors";
 import { Server } from "socket.io";
+import { Chess } from "chess.js";
 
 type PublicUser = {
   userId: string;
@@ -23,8 +24,10 @@ type InviteRecord = {
 type SessionRecord = {
   sessionId: string;
   userIds: [string, string];
-  activityType: "none";
+  activityType: "chess";
   status: "active" | "ended";
+  chessFen: string;
+  turn: "w" | "b";
 };
 
 const invitesById = new Map<string, InviteRecord>();
@@ -142,11 +145,15 @@ socket.on("INVITE_ACCEPT", (payload: { inviteId: string }) => {
   const sessionId = `${invite.fromUserId}:${invite.toUserId}:${Date.now()}`;
   const roomName = `session:${sessionId}`;
 
+  const initialGame = new Chess();
+
   const session: SessionRecord = {
     sessionId,
     userIds: [invite.fromUserId, invite.toUserId],
-    activityType: "none",
+    activityType: "chess",
     status: "active",
+    chessFen: initialGame.fen(),
+    turn: initialGame.turn(),
   };
 
   sessionsById.set(sessionId, session);
@@ -168,14 +175,22 @@ socket.on("INVITE_ACCEPT", (payload: { inviteId: string }) => {
     sessionId,
     peerUserId: toUser.userId,
     peerDisplayName: toUser.displayName,
-    activityType: "none",
+    activityType: "chess",
+    playerColor: "w",
   });
 
   io.to(toUser.socketId).emit("SESSION_STARTED", {
     sessionId,
     peerUserId: fromUser.userId,
     peerDisplayName: fromUser.displayName,
-    activityType: "none",
+    activityType: "chess",
+    playerColor: "b",
+  });
+
+  io.to(roomName).emit("CHESS_STATE", {
+    sessionId,
+    fen: session.chessFen,
+    turn: session.turn,
   });
 
   broadcastLobby();
@@ -201,6 +216,64 @@ socket.on("INVITE_ACCEPT", (payload: { inviteId: string }) => {
       io.to(fromUser.socketId).emit("INVITE_RESULT", { inviteId: invite.inviteId, result: "failed" });
       console.log("INVITE_RESULT emitted to", fromUser.socketId);
     }
+  });
+
+  socket.on("CHESS_MOVE", (payload: {
+    sessionId: string;
+    from: string;
+    to: string;
+    promotion?: "q" | "r" | "b" | "n";
+  }) => {
+    console.log("CHESS_MOVE received", payload, "from socket", socket.id);
+
+    const userId = userIdBySocketId.get(socket.id);
+    if (!userId) return;
+
+    const session = sessionsById.get(payload.sessionId);
+    if (!session || session.status !== "active") return;
+
+    if (!session.userIds.includes(userId)) return;
+
+    const game = new Chess(session.chessFen);
+
+    const movingColor = game.turn();
+    const expectedUserId =
+      movingColor === "w" ? session.userIds[0] : session.userIds[1];
+
+    if (userId !== expectedUserId) {
+      console.log("CHESS_MOVE rejected: wrong turn");
+      return;
+    }
+
+    let result;
+    try {
+      result = game.move({
+        from: payload.from,
+        to: payload.to,
+        promotion: payload.promotion ?? "q",
+      });
+    } catch (error) {
+      console.log("CHESS_MOVE rejected: illegal move", payload);
+      return;
+    }
+
+    session.chessFen = game.fen();
+    session.turn = game.turn();
+    sessionsById.set(session.sessionId, session);
+
+    const roomName = `session:${session.sessionId}`;
+
+    io.to(roomName).emit("CHESS_STATE", {
+      sessionId: session.sessionId,
+      fen: session.chessFen,
+      turn: session.turn,
+    });
+
+    console.log("CHESS_STATE broadcast", {
+      sessionId: session.sessionId,
+      fen: session.chessFen,
+      turn: session.turn,
+    });
   });
 
   socket.on("disconnect", () => {
