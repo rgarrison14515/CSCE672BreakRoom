@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { io, Socket } from "socket.io-client";
+import ChessActivity from "./components/ChessActivity";
 
 type PublicUser = {
   userId: string;
@@ -90,7 +91,8 @@ export default function App() {
           <h2>Breakroom Session</h2>
           <p>Session ID: {session.sessionId}</p>
           <p>With: {session.peerDisplayName}</p>
-          <p>Activity: {session.activityType}</p>
+          
+          <ChessActivity />
 
           <button
             onClick={() => {
