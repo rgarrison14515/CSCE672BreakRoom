@@ -31,6 +31,7 @@ export default function App() {
     playerColor: "w" | "b";
   } | null>(null);
 
+  const [expiredInviteMessage, setExpiredInviteMessage] = useState<string>("");
   const [chessState, setChessState] = useState<{
     fen: string;
     turn: "w" | "b";
@@ -55,6 +56,7 @@ export default function App() {
       fromDisplayName: string;
       activityType: ActivityType;
     }) => {
+      setExpiredInviteMessage("");
       setIncomingInvite(payload);
     };
     const onInviteResult = (payload: { inviteId: string; result: "success" | "failed" }) => {
@@ -65,7 +67,16 @@ export default function App() {
         setInviteStatus("");
       }
     };
-
+    const onInviteExpired = (payload: {
+      inviteId: string;
+      fromDisplayName: string;
+      activityType: ActivityType;
+    }) => {
+      setExpiredInviteMessage(
+        `Invite from ${payload.fromDisplayName} for ${payload.activityType} expired.`
+      );
+      setIncomingInvite(null);
+    };
 
     const onSessionStarted = (payload: {
       sessionId: string;
@@ -100,6 +111,7 @@ export default function App() {
     socket.on("IDENTIFIED", onIdentified);
     socket.on("INVITE_RECEIVED", onInviteReceived);
     socket.on("INVITE_RESULT", onInviteResult);
+    socket.on("INVITE_EXPIRED", onInviteExpired);
     socket.on("SESSION_STARTED", onSessionStarted);
     socket.on("CHESS_STATE", onChessState);
     socket.on("connect_error", (err) => console.log("connect_error", err.message));
@@ -112,6 +124,7 @@ export default function App() {
       socket.off("IDENTIFIED", onIdentified);
       socket.off("INVITE_RECEIVED", onInviteReceived);
       socket.off("INVITE_RESULT", onInviteResult);
+      socket.off("INVITE_EXPIRED", onInviteExpired);
       socket.off("connect_error");
       socket.off("disconnect");
       socket.off("SESSION_STARTED", onSessionStarted);
@@ -176,6 +189,7 @@ export default function App() {
           <button
             onClick={() => {
               socket.emit("INVITE_ACCEPT", { inviteId: incomingInvite.inviteId });
+              setExpiredInviteMessage("");
               setIncomingInvite(null);
             }}
             style={{ marginRight: 8 }}
@@ -185,6 +199,7 @@ export default function App() {
           <button
             onClick={() => {
               socket.emit("INVITE_DECLINE", { inviteId: incomingInvite.inviteId });
+              setExpiredInviteMessage("");
               setIncomingInvite(null);
             }}
           >
@@ -193,7 +208,12 @@ export default function App() {
         </div>
       )}
 
-        
+      {expiredInviteMessage && (
+        <div style={{ border: "1px solid #ccc", padding: 12, marginBottom: 12 }}>
+          {expiredInviteMessage}
+        </div>
+      )}
+
         {inviteTargetUserId && (
           <div style={{ border: "1px solid #ccc", padding: 12, marginBottom: 12 }}>
             <div style={{ marginBottom: 8 }}>

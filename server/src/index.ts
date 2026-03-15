@@ -136,6 +136,18 @@ io.on("connection", (socket) => {
       });
     }
 
+    const toUser = usersByUserId.get(currentInvite.toUserId);
+    if (toUser) {
+      const fromDisplayName =
+        usersByUserId.get(currentInvite.fromUserId)?.displayName ?? "Unknown";
+
+      io.to(toUser.socketId).emit("INVITE_EXPIRED", {
+        inviteId,
+        fromDisplayName,
+        activityType: currentInvite.activityType,
+      });
+    }
+
     console.log("INVITE expired", inviteId);
   }, 15000);
 
