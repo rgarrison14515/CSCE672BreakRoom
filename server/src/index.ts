@@ -123,7 +123,14 @@ io.on("connection", (socket) => {
 
   setTimeout(() => {
     const currentInvite = invitesById.get(inviteId);
-    if (!currentInvite || currentInvite.status !== "pending") return;
+    if (
+      !currentInvite ||
+      (currentInvite.status !== "pending" && currentInvite.status !== "declined")
+    ) {
+      return;
+    }
+
+    const wasPending = currentInvite.status === "pending";
 
     currentInvite.status = "expired";
     invitesById.set(inviteId, currentInvite);
@@ -135,17 +142,18 @@ io.on("connection", (socket) => {
         result: "failed",
       });
     }
+    if (wasPending) {
+      const toUser = usersByUserId.get(currentInvite.toUserId);
+      if (toUser) {
+        const fromDisplayName =
+          usersByUserId.get(currentInvite.fromUserId)?.displayName ?? "Unknown";
 
-    const toUser = usersByUserId.get(currentInvite.toUserId);
-    if (toUser) {
-      const fromDisplayName =
-        usersByUserId.get(currentInvite.fromUserId)?.displayName ?? "Unknown";
-
-      io.to(toUser.socketId).emit("INVITE_EXPIRED", {
-        inviteId,
-        fromDisplayName,
-        activityType: currentInvite.activityType,
-      });
+        io.to(toUser.socketId).emit("INVITE_EXPIRED", {
+          inviteId,
+          fromDisplayName,
+          activityType: currentInvite.activityType,
+        });
+      }
     }
 
     console.log("INVITE expired", inviteId);
@@ -246,13 +254,7 @@ socket.on("INVITE_ACCEPT", (payload: { inviteId: string }) => {
     invite.status = "declined";
     invitesById.set(invite.inviteId, invite);
 
-    const fromUser = usersByUserId.get(invite.fromUserId);
-    console.log("INVITE_DECLINE fromUser:", fromUser);
-
-    if (fromUser) {
-      io.to(fromUser.socketId).emit("INVITE_RESULT", { inviteId: invite.inviteId, result: "failed" });
-      console.log("INVITE_RESULT emitted to", fromUser.socketId);
-    }
+    console.log("INVITE_DECLINE stored for delayed failure", invite.inviteId);
   });
 
   socket.on("CHESS_MOVE", (payload: {
