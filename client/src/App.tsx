@@ -48,7 +48,12 @@ export default function App() {
       setIncomingInvite(payload);
     };
     const onInviteResult = (payload: { inviteId: string; result: "success" | "failed" }) => {
-      setInviteStatus(`Invite ${payload.result} (${payload.inviteId})`);
+      if (payload.result === "failed") {
+        setInviteStatus("Invitation failed.");
+      } 
+      else{
+        setInviteStatus("");
+      }
     };
 
 
@@ -59,12 +64,14 @@ export default function App() {
       activityType: string;
       playerColor: "w" | "b";
     }) => {
+      setInviteStatus("");
       setSession(payload);
     };
 
     const onSessionEnded = (payload: { sessionId: string }) => {
       setSession(null);
       setChessState(null);
+      setInviteStatus("");
     };
 
     const onChessState = (payload: {
@@ -184,7 +191,10 @@ export default function App() {
             {u.userId !== myUserId && (
               <button
                 style={{ marginLeft: 8 }}
-                onClick={() => socket.emit("INVITE_SEND", { toUserId: u.userId })}
+                onClick={() => {
+                  setInviteStatus("");
+                  socket.emit("INVITE_SEND", { toUserId: u.userId });
+                }}
               >
                 Invite
               </button>

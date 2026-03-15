@@ -18,7 +18,7 @@ type InviteRecord = {
   inviteId: string;
   fromUserId: string;
   toUserId: string;
-  status: "pending" | "accepted" | "declined";
+  status: "pending" | "accepted" | "declined" | "expired";
 };
 
 type SessionRecord = {
@@ -115,6 +115,24 @@ io.on("connection", (socket) => {
 
   console.log("INVITE_SEND", invite);
 
+  setTimeout(() => {
+    const currentInvite = invitesById.get(inviteId);
+    if (!currentInvite || currentInvite.status !== "pending") return;
+
+    currentInvite.status = "expired";
+    invitesById.set(inviteId, currentInvite);
+
+    const fromUser = usersByUserId.get(currentInvite.fromUserId);
+    if (fromUser) {
+      io.to(fromUser.socketId).emit("INVITE_RESULT", {
+        inviteId,
+        result: "failed",
+      });
+    }
+
+    console.log("INVITE expired", inviteId);
+  }, 15000);
+  
   // Send invite to receiver's socket
   io.to(toUser.socketId).emit("INVITE_RECEIVED", {
     inviteId,
