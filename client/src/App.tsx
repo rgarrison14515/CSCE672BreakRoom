@@ -2,6 +2,8 @@ import { useEffect, useMemo, useState } from "react";
 import { io, Socket } from "socket.io-client";
 import ChessActivity from "./components/ChessActivity";
 
+type ActivityType = "chess";
+
 type PublicUser = {
   userId: string;
   displayName: string;
@@ -16,13 +18,16 @@ export default function App() {
     inviteId: string;
     fromUserId: string;
     fromDisplayName: string;
+    activityType: ActivityType;
   } | null>(null);
   const [inviteStatus, setInviteStatus] = useState<string>("");
+  const [inviteTargetUserId, setInviteTargetUserId] = useState<string | null>(null);
+  const [selectedActivity, setSelectedActivity] = useState<ActivityType>("chess");
   const [session, setSession] = useState<{
     sessionId: string;
     peerUserId: string;
     peerDisplayName: string;
-    activityType: string;
+    activityType: ActivityType;
     playerColor: "w" | "b";
   } | null>(null);
 
@@ -44,7 +49,12 @@ export default function App() {
     const onConnect = () => socket.emit("IDENTIFY", { displayName: name });
     const onLobbyState = (payload: { users: PublicUser[] }) => setUsers(payload.users);
     const onIdentified = (payload: { userId: string }) => setMyUserId(payload.userId);
-    const onInviteReceived = (payload: { inviteId: string; fromUserId: string; fromDisplayName: string }) => {
+    const onInviteReceived = (payload: {
+      inviteId: string;
+      fromUserId: string;
+      fromDisplayName: string;
+      activityType: ActivityType;
+    }) => {
       setIncomingInvite(payload);
     };
     const onInviteResult = (payload: { inviteId: string; result: "success" | "failed" }) => {
@@ -61,7 +71,7 @@ export default function App() {
       sessionId: string;
       peerUserId: string;
       peerDisplayName: string;
-      activityType: string;
+      activityType: ActivityType;
       playerColor: "w" | "b";
     }) => {
       setInviteStatus("");
@@ -161,7 +171,7 @@ export default function App() {
       {incomingInvite && (
         <div style={{ border: "1px solid #ccc", padding: 12, marginBottom: 12 }}>
           <div>
-            Invite from <b>{incomingInvite.fromDisplayName}</b>
+            Invite from <b>{incomingInvite.fromDisplayName}</b> for <b>{incomingInvite.activityType}</b>
           </div>
           <button
             onClick={() => {
@@ -183,6 +193,44 @@ export default function App() {
         </div>
       )}
 
+        
+        {inviteTargetUserId && (
+          <div style={{ border: "1px solid #ccc", padding: 12, marginBottom: 12 }}>
+            <div style={{ marginBottom: 8 }}>
+              Select activity before sending invite
+            </div>
+
+            <select
+              value={selectedActivity}
+              onChange={(e) => setSelectedActivity(e.target.value as ActivityType)}
+              style={{ marginRight: 8 }}
+            >
+              <option value="chess">Chess</option>
+            </select>
+
+            <button
+              onClick={() => {
+                socket.emit("INVITE_SEND", {
+                  toUserId: inviteTargetUserId,
+                  activityType: selectedActivity,
+                });
+                setInviteTargetUserId(null);
+              }}
+              style={{ marginRight: 8 }}
+            >
+              Send Invite
+            </button>
+
+            <button
+              onClick={() => {
+                setInviteTargetUserId(null);
+              }}
+            >
+              Cancel
+            </button>
+          </div>
+      )}
+
       <h3>Users in lobby ({users.length})</h3>
       <ul>
         {users.map((u) => (
@@ -193,7 +241,8 @@ export default function App() {
                 style={{ marginLeft: 8 }}
                 onClick={() => {
                   setInviteStatus("");
-                  socket.emit("INVITE_SEND", { toUserId: u.userId });
+                  setSelectedActivity("chess");
+                  setInviteTargetUserId(u.userId);
                 }}
               >
                 Invite

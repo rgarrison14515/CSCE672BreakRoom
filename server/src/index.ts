@@ -14,21 +14,26 @@ type UserRecord = PublicUser & {
   socketId: string;
 };
 
+type ActivityType = "chess";
+
 type InviteRecord = {
   inviteId: string;
   fromUserId: string;
   toUserId: string;
+  activityType: ActivityType;
   status: "pending" | "accepted" | "declined" | "expired";
 };
+
 
 type SessionRecord = {
   sessionId: string;
   userIds: [string, string];
-  activityType: "chess";
+  activityType: ActivityType;
   status: "active" | "ended";
   chessFen: string;
   turn: "w" | "b";
 };
+
 
 const invitesById = new Map<string, InviteRecord>();
 const usersByUserId = new Map<string, UserRecord>();
@@ -93,7 +98,7 @@ io.on("connection", (socket) => {
     broadcastLobby();
   });
 
-  socket.on("INVITE_SEND", (payload: { toUserId: string }) => {
+  socket.on("INVITE_SEND", (payload: { toUserId: string; activityType: ActivityType }) => {
   const fromUserId = userIdBySocketId.get(socket.id);
   if (!fromUserId) return;
 
@@ -108,6 +113,7 @@ io.on("connection", (socket) => {
     inviteId,
     fromUserId,
     toUserId: payload.toUserId,
+    activityType: payload.activityType,
     status: "pending",
   };
 
@@ -132,12 +138,13 @@ io.on("connection", (socket) => {
 
     console.log("INVITE expired", inviteId);
   }, 15000);
-  
+
   // Send invite to receiver's socket
   io.to(toUser.socketId).emit("INVITE_RECEIVED", {
     inviteId,
     fromUserId,
     fromDisplayName: usersByUserId.get(fromUserId)?.displayName ?? "Unknown",
+    activityType: invite.activityType,
   });
 });
 
@@ -168,7 +175,7 @@ socket.on("INVITE_ACCEPT", (payload: { inviteId: string }) => {
   const session: SessionRecord = {
     sessionId,
     userIds: [invite.fromUserId, invite.toUserId],
-    activityType: "chess",
+    activityType: invite.activityType,
     status: "active",
     chessFen: initialGame.fen(),
     turn: initialGame.turn(),
@@ -193,7 +200,7 @@ socket.on("INVITE_ACCEPT", (payload: { inviteId: string }) => {
     sessionId,
     peerUserId: toUser.userId,
     peerDisplayName: toUser.displayName,
-    activityType: "chess",
+    activityType: invite.activityType,
     playerColor: "w",
   });
 
@@ -201,7 +208,7 @@ socket.on("INVITE_ACCEPT", (payload: { inviteId: string }) => {
     sessionId,
     peerUserId: fromUser.userId,
     peerDisplayName: fromUser.displayName,
-    activityType: "chess",
+    activityType: invite.activityType,
     playerColor: "b",
   });
 
