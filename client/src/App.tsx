@@ -10,6 +10,12 @@ type PublicUser = {
   presence: "in_lobby" | "in_session";
 };
 
+type ChatMessage = {
+  senderUserId: string;
+  senderDisplayName: string;
+  text: string;
+};
+
 export default function App() {
   const [users, setUsers] = useState<PublicUser[]>([]);
   const [me, setMe] = useState("");
@@ -37,6 +43,8 @@ export default function App() {
     turn: "w" | "b";
   } | null>(null);
 
+  const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
+  const [chatInput, setChatInput] = useState("");
 
 
   const socket: Socket = useMemo(() => {
@@ -93,6 +101,8 @@ export default function App() {
       setSession(null);
       setChessState(null);
       setInviteStatus("");
+      setChatMessages([]);
+      setChatInput("");
     };
 
     const onChessState = (payload: {
@@ -106,6 +116,13 @@ export default function App() {
       });
     };
 
+    const onChatState = (payload: {
+      sessionId: string;
+      messages: ChatMessage[];
+    }) => {
+      setChatMessages(payload.messages);
+    };
+
     socket.on("connect", onConnect);
     socket.on("LOBBY_STATE", onLobbyState);
     socket.on("IDENTIFIED", onIdentified);
@@ -114,6 +131,7 @@ export default function App() {
     socket.on("INVITE_EXPIRED", onInviteExpired);
     socket.on("SESSION_STARTED", onSessionStarted);
     socket.on("CHESS_STATE", onChessState);
+    socket.on("CHAT_STATE", onChatState);
     socket.on("connect_error", (err) => console.log("connect_error", err.message));
     socket.on("disconnect", (reason) => console.log("disconnected:", reason));
     socket.on("SESSION_ENDED", onSessionEnded);
@@ -129,6 +147,7 @@ export default function App() {
       socket.off("disconnect");
       socket.off("SESSION_STARTED", onSessionStarted);
       socket.off("CHESS_STATE", onChessState);
+      socket.off("CHAT_STATE", onChatState);
       socket.off("SESSION_ENDED", onSessionEnded);
     };
 }, [socket]);
@@ -156,6 +175,55 @@ export default function App() {
 />
             </>
           )}
+          
+
+                    <div style={{ marginTop: 16, maxWidth: 500 }}>
+            <h3>Chat</h3>
+
+            <div
+              style={{
+                border: "1px solid #ccc",
+                minHeight: 120,
+                maxHeight: 200,
+                overflowY: "auto",
+                padding: 8,
+                marginBottom: 8,
+              }}
+            >
+              {chatMessages.length === 0 ? (
+                <div>No messages yet.</div>
+              ) : (
+                chatMessages.map((msg, index) => (
+                  <div key={index} style={{ marginBottom: 6 }}>
+                    <b>{msg.senderDisplayName}:</b> {msg.text}
+                  </div>
+                ))
+              )}
+            </div>
+            
+            <div>
+              <input
+                type="text"
+                value={chatInput}
+                onChange={(e) => setChatInput(e.target.value)}
+                placeholder="Type a message..."
+                style={{ width: 300, marginRight: 8 }}
+              />
+              <button
+                onClick={() => {
+                  if (!chatInput.trim()) return;
+
+                  socket.emit("CHAT_SEND", {
+                    sessionId: session.sessionId,
+                    text: chatInput,
+                  });
+                  setChatInput("");
+                }}
+              >
+                Send
+              </button>
+            </div>
+          </div>
 
           <button
             onClick={() => {

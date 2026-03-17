@@ -25,6 +25,12 @@ type InviteRecord = {
 };
 
 
+type ChatMessage = {
+  senderUserId: string;
+  senderDisplayName: string;
+  text: string;
+};
+
 type SessionRecord = {
   sessionId: string;
   userIds: [string, string];
@@ -32,6 +38,7 @@ type SessionRecord = {
   status: "active" | "ended";
   chessFen: string;
   turn: "w" | "b";
+  chatMessages: ChatMessage[];
 };
 
 
@@ -63,6 +70,14 @@ function broadcastLobby() {
   io.to("lobby").emit("LOBBY_STATE", lobbyState());
 }
 
+function emitChatState(session: SessionRecord) {
+  const roomName = `session:${session.sessionId}`;
+
+  io.to(roomName).emit("CHAT_STATE", {
+    sessionId: session.sessionId,
+    messages: session.chatMessages,
+  });
+}
 
 function findActiveSessionByUserId(userId: string): SessionRecord | undefined {
   for (const session of sessionsById.values()) {
@@ -199,6 +214,7 @@ socket.on("INVITE_ACCEPT", (payload: { inviteId: string }) => {
     status: "active",
     chessFen: initialGame.fen(),
     turn: initialGame.turn(),
+    chatMessages: [],
   };
 
   sessionsById.set(sessionId, session);
@@ -238,6 +254,7 @@ socket.on("INVITE_ACCEPT", (payload: { inviteId: string }) => {
     turn: session.turn,
   });
 
+  emitChatState(session);
   broadcastLobby();
 
   console.log("SESSION_STARTED", session);
@@ -315,6 +332,32 @@ socket.on("INVITE_ACCEPT", (payload: { inviteId: string }) => {
     });
   });
 
+  socket.on("CHAT_SEND", (payload: { sessionId: string; text: string }) => {
+    console.log("CHAT_SEND received", payload, "from socket", socket.id);
+
+    const userId = userIdBySocketId.get(socket.id);
+    if (!userId) return;
+
+    const session = sessionsById.get(payload.sessionId);
+    if (!session || session.status !== "active") return;
+
+    if (!session.userIds.includes(userId)) return;
+
+    const user = usersByUserId.get(userId);
+    if (!user) return;
+
+    const text = payload.text.trim();
+    if (!text) return;
+
+    session.chatMessages.push({
+      senderUserId: user.userId,
+      senderDisplayName: user.displayName,
+      text,
+    });
+
+    sessionsById.set(session.sessionId, session);
+    emitChatState(session);
+  });
   socket.on("disconnect", () => {
     const userId = userIdBySocketId.get(socket.id);
 
