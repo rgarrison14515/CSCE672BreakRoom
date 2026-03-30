@@ -1,8 +1,9 @@
 import { useEffect, useMemo, useState } from "react";
 import { io, Socket } from "socket.io-client";
 import ChessActivity from "./components/ChessActivity";
+import Connect4Activity from "./components/Connect4Activity";
 
-type ActivityType = "chess";
+type ActivityType = "chess" | "connect4";
 
 type PublicUser = {
   userId: string;
@@ -15,6 +16,8 @@ type ChatMessage = {
   senderDisplayName: string;
   text: string;
 };
+
+type C4Color = null | "r" | "y";
 
 export default function App() {
   const [users, setUsers] = useState<PublicUser[]>([]);
@@ -43,9 +46,14 @@ export default function App() {
     turn: "w" | "b";
   } | null>(null);
 
+  const [c4State, setC4State] = useState<{
+    board: C4Color[][];
+    turn: "r" | "y";
+    winner: null | "r" | "y" | "draw";
+  } | null>(null);
+
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
   const [chatInput, setChatInput] = useState("");
-
 
   const socket: Socket = useMemo(() => {
     return io("http://localhost:3001", { transports: ["websocket"] });
@@ -58,6 +66,7 @@ export default function App() {
     const onConnect = () => socket.emit("IDENTIFY", { displayName: name });
     const onLobbyState = (payload: { users: PublicUser[] }) => setUsers(payload.users);
     const onIdentified = (payload: { userId: string }) => setMyUserId(payload.userId);
+
     const onInviteReceived = (payload: {
       inviteId: string;
       fromUserId: string;
@@ -67,14 +76,15 @@ export default function App() {
       setExpiredInviteMessage("");
       setIncomingInvite(payload);
     };
+
     const onInviteResult = (payload: { inviteId: string; result: "success" | "failed" }) => {
       if (payload.result === "failed") {
         setInviteStatus("Invitation failed.");
-      } 
-      else{
+      } else {
         setInviteStatus("");
       }
     };
+
     const onInviteExpired = (payload: {
       inviteId: string;
       fromDisplayName: string;
@@ -97,9 +107,10 @@ export default function App() {
       setSession(payload);
     };
 
-    const onSessionEnded = (payload: { sessionId: string }) => {
+    const onSessionEnded = (_payload: { sessionId: string }) => {
       setSession(null);
       setChessState(null);
+      setC4State(null);
       setInviteStatus("");
       setChatMessages([]);
       setChatInput("");
@@ -110,10 +121,16 @@ export default function App() {
       fen: string;
       turn: "w" | "b";
     }) => {
-      setChessState({
-        fen: payload.fen,
-        turn: payload.turn,
-      });
+      setChessState({ fen: payload.fen, turn: payload.turn });
+    };
+
+    const onC4State = (payload: {
+      sessionId: string;
+      board: C4Color[][];
+      turn: "r" | "y";
+      winner: null | "r" | "y" | "draw";
+    }) => {
+      setC4State({ board: payload.board, turn: payload.turn, winner: payload.winner });
     };
 
     const onChatState = (payload: {
@@ -131,6 +148,7 @@ export default function App() {
     socket.on("INVITE_EXPIRED", onInviteExpired);
     socket.on("SESSION_STARTED", onSessionStarted);
     socket.on("CHESS_STATE", onChessState);
+    socket.on("C4_STATE", onC4State);
     socket.on("CHAT_STATE", onChatState);
     socket.on("connect_error", (err) => console.log("connect_error", err.message));
     socket.on("disconnect", (reason) => console.log("disconnected:", reason));
@@ -147,112 +165,130 @@ export default function App() {
       socket.off("disconnect");
       socket.off("SESSION_STARTED", onSessionStarted);
       socket.off("CHESS_STATE", onChessState);
+      socket.off("C4_STATE", onC4State);
       socket.off("CHAT_STATE", onChatState);
       socket.off("SESSION_ENDED", onSessionEnded);
     };
-}, [socket]);
-
+  }, [socket]);
 
   if (session) {
-      return (
-        <div style={{ padding: 16, fontFamily: "sans-serif" }}>
-          <h2>Breakroom Session</h2>
-          <p>Session ID: {session.sessionId}</p>
-          <p>With: {session.peerDisplayName}</p>
-          
-          {chessState && (
-            <>
-              <p>Turn: {chessState.turn === "w" ? "White" : "Black"}</p>
-              <ChessActivity
-                fen={chessState.fen}
-                playerColor={session.playerColor}
-                onMove={(move) => {
-                  socket.emit("CHESS_MOVE", {
-                    sessionId: session.sessionId,
-                    ...move,
-                  });
-                }}
-/>
-            </>
-          )}
-          
+    return (
+      <div style={{ padding: 16, fontFamily: "sans-serif" }}>
+        <h2>Breakroom Session</h2>
+        <p>Session ID: {session.sessionId}</p>
+        <p>With: {session.peerDisplayName}</p>
 
-                    <div style={{ marginTop: 16, maxWidth: 500 }}>
-            <h3>Chat</h3>
+        {/* Chess */}
+        {chessState && session.activityType === "chess" && (
+          <>
+            <p>Turn: {chessState.turn === "w" ? "White" : "Black"}</p>
+            <ChessActivity
+              fen={chessState.fen}
+              playerColor={session.playerColor}
+              onMove={(move) => {
+                socket.emit("CHESS_MOVE", {
+                  sessionId: session.sessionId,
+                  ...move,
+                });
+              }}
+            />
+          </>
+        )}
 
-            <div
-              style={{
-                border: "1px solid #ccc",
-                minHeight: 120,
-                maxHeight: 200,
-                overflowY: "auto",
-                padding: 8,
-                marginBottom: 8,
+        {/* Connect 4 */}
+        {c4State && session.activityType === "connect4" && (
+          <Connect4Activity
+            board={c4State.board}
+            turn={c4State.turn}
+            winner={c4State.winner}
+            myColor={session.playerColor === "w" ? "r" : "y"}
+            onDrop={(col) =>
+              socket.emit("C4_DROP", { sessionId: session.sessionId, col })
+            }
+            onRematch={() =>
+              socket.emit("C4_REMATCH", { sessionId: session.sessionId })
+            }
+          />
+        )}
+
+        {/* Chat */}
+        <div style={{ marginTop: 16, maxWidth: 500 }}>
+          <h3>Chat</h3>
+          <div
+            style={{
+              border: "1px solid #ccc",
+              minHeight: 120,
+              maxHeight: 200,
+              overflowY: "auto",
+              padding: 8,
+              marginBottom: 8,
+            }}
+          >
+            {chatMessages.length === 0 ? (
+              <div>No messages yet.</div>
+            ) : (
+              chatMessages.map((msg, index) => (
+                <div key={index} style={{ marginBottom: 6 }}>
+                  <b>{msg.senderDisplayName}:</b> {msg.text}
+                </div>
+              ))
+            )}
+          </div>
+          <div>
+            <input
+              type="text"
+              value={chatInput}
+              onChange={(e) => setChatInput(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" && chatInput.trim()) {
+                  socket.emit("CHAT_SEND", { sessionId: session.sessionId, text: chatInput });
+                  setChatInput("");
+                }
+              }}
+              placeholder="Type a message..."
+              style={{ width: 300, marginRight: 8 }}
+            />
+            <button
+              onClick={() => {
+                if (!chatInput.trim()) return;
+                socket.emit("CHAT_SEND", { sessionId: session.sessionId, text: chatInput });
+                setChatInput("");
               }}
             >
-              {chatMessages.length === 0 ? (
-                <div>No messages yet.</div>
-              ) : (
-                chatMessages.map((msg, index) => (
-                  <div key={index} style={{ marginBottom: 6 }}>
-                    <b>{msg.senderDisplayName}:</b> {msg.text}
-                  </div>
-                ))
-              )}
-            </div>
-            
-            <div>
-              <input
-                type="text"
-                value={chatInput}
-                onChange={(e) => setChatInput(e.target.value)}
-                placeholder="Type a message..."
-                style={{ width: 300, marginRight: 8 }}
-              />
-              <button
-                onClick={() => {
-                  if (!chatInput.trim()) return;
-
-                  socket.emit("CHAT_SEND", {
-                    sessionId: session.sessionId,
-                    text: chatInput,
-                  });
-                  setChatInput("");
-                }}
-              >
-                Send
-              </button>
-            </div>
+              Send
+            </button>
           </div>
-
-          <button
-            onClick={() => {
-              socket.emit("SESSION_LEAVE", { sessionId: session.sessionId });
-            }}
-            style={{ marginTop: 12 }}
-          >
-            Leave Session
-          </button>
         </div>
-      );
-    }
+
+        <button
+          onClick={() => {
+            socket.emit("SESSION_LEAVE", { sessionId: session.sessionId });
+          }}
+          style={{ marginTop: 12 }}
+        >
+          Leave Session
+        </button>
+      </div>
+    );
+  }
 
   return (
     <div style={{ padding: 16, fontFamily: "sans-serif" }}>
       <h2>Breakroom Lobby</h2>
       <p>Me: {me}</p>
       <p>My userId: {myUserId}</p>
-      {/* Invite result status */}
+
       {inviteStatus && (
         <p style={{ color: "green" }}>
           <b>Status:</b> {inviteStatus}
         </p>
       )}
-      {/* Incoming Invite Box */}
+
       {incomingInvite && (
         <div style={{ border: "1px solid #ccc", padding: 12, marginBottom: 12 }}>
           <div>
-            Invite from <b>{incomingInvite.fromDisplayName}</b> for <b>{incomingInvite.activityType}</b>
+            Invite from <b>{incomingInvite.fromDisplayName}</b> for{" "}
+            <b>{incomingInvite.activityType}</b>
           </div>
           <button
             onClick={() => {
@@ -282,41 +318,34 @@ export default function App() {
         </div>
       )}
 
-        {inviteTargetUserId && (
-          <div style={{ border: "1px solid #ccc", padding: 12, marginBottom: 12 }}>
-            <div style={{ marginBottom: 8 }}>
-              Select activity before sending invite
-            </div>
+      {inviteTargetUserId && (
+        <div style={{ border: "1px solid #ccc", padding: 12, marginBottom: 12 }}>
+          <div style={{ marginBottom: 8 }}>Select activity before sending invite</div>
 
-            <select
-              value={selectedActivity}
-              onChange={(e) => setSelectedActivity(e.target.value as ActivityType)}
-              style={{ marginRight: 8 }}
-            >
-              <option value="chess">Chess</option>
-            </select>
+          <select
+            value={selectedActivity}
+            onChange={(e) => setSelectedActivity(e.target.value as ActivityType)}
+            style={{ marginRight: 8 }}
+          >
+            <option value="chess">Chess</option>
+            <option value="connect4">Connect 4</option>
+          </select>
 
-            <button
-              onClick={() => {
-                socket.emit("INVITE_SEND", {
-                  toUserId: inviteTargetUserId,
-                  activityType: selectedActivity,
-                });
-                setInviteTargetUserId(null);
-              }}
-              style={{ marginRight: 8 }}
-            >
-              Send Invite
-            </button>
+          <button
+            onClick={() => {
+              socket.emit("INVITE_SEND", {
+                toUserId: inviteTargetUserId,
+                activityType: selectedActivity,
+              });
+              setInviteTargetUserId(null);
+            }}
+            style={{ marginRight: 8 }}
+          >
+            Send Invite
+          </button>
 
-            <button
-              onClick={() => {
-                setInviteTargetUserId(null);
-              }}
-            >
-              Cancel
-            </button>
-          </div>
+          <button onClick={() => setInviteTargetUserId(null)}>Cancel</button>
+        </div>
       )}
 
       <h3>Users in lobby ({users.length})</h3>
