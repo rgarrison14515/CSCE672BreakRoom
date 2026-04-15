@@ -1,9 +1,15 @@
-import express from "express";
+import express, { Request, Response } from "express";
 import http from "http";
 import cors from "cors";
 import { Server } from "socket.io";
 import { Chess } from "chess.js";
 
+// ── Slack config ────────────────────────────────────────────────────────────
+import "dotenv/config";
+const SLACK_BOT_TOKEN = process.env.SLACK_BOT_TOKEN ?? "";
+const CLIENT_URL = process.env.CLIENT_URL ?? "http://localhost:5173";
+
+// ── Types ────────────────────────────────────────────────────────────────────
 type PublicUser = {
   userId: string;
   displayName: string;
@@ -45,23 +51,35 @@ type SessionRecord = {
   c4Winner: null | "r" | "y" | "draw";
 };
 
+// Slack invite links: token -> { activityType, fromDisplayName, expires }
+type SlackInviteLink = {
+  activityType: ActivityType;
+  fromDisplayName: string;
+  expires: number;
+};
+
+// ── In-memory state ──────────────────────────────────────────────────────────
 const invitesById = new Map<string, InviteRecord>();
 const usersByUserId = new Map<string, UserRecord>();
 const userIdBySocketId = new Map<string, string>();
 const sessionsById = new Map<string, SessionRecord>();
+const slackInviteLinks = new Map<string, SlackInviteLink>();
 
+// ── Express + Socket.IO setup ────────────────────────────────────────────────
 const app = express();
 app.use(cors());
+app.use(express.json());
 
 const server = http.createServer(app);
 
 const io = new Server(server, {
   cors: {
-    origin: "http://localhost:5173",
+    origin: CLIENT_URL,
     methods: ["GET", "POST"],
   },
 });
 
+// ── Helpers ──────────────────────────────────────────────────────────────────
 function makeC4Board(): C4Color[][] {
   return Array.from({ length: 6 }, () => Array(7).fill(null));
 }
@@ -69,7 +87,6 @@ function makeC4Board(): C4Color[][] {
 function checkC4Winner(board: C4Color[][]): null | "r" | "y" | "draw" {
   const rows = 6, cols = 7;
   const directions = [[0,1],[1,0],[1,1],[1,-1]];
-
   for (let r = 0; r < rows; r++) {
     for (let c = 0; c < cols; c++) {
       const cell = board[r][c];
@@ -126,27 +143,169 @@ function findActiveSessionByUserId(userId: string): SessionRecord | undefined {
   return undefined;
 }
 
+// ── Slack helpers ────────────────────────────────────────────────────────────
+
+// Look up a Slack user's ID by their display name or email
+async function findSlackUserId(nameOrEmail: string): Promise<string | null> {
+  // Try by email first
+  if (nameOrEmail.includes("@")) {
+    const res = await fetch(
+      `https://slack.com/api/users.lookupByEmail?email=${encodeURIComponent(nameOrEmail)}`,
+      { headers: { Authorization: `Bearer ${SLACK_BOT_TOKEN}` } }
+    );
+    const data = await res.json() as any;
+    if (data.ok) return data.user.id;
+  }
+
+  // Otherwise search display name in users.list
+  const res = await fetch("https://slack.com/api/users.list", {
+    headers: { Authorization: `Bearer ${SLACK_BOT_TOKEN}` },
+  });
+  const data = await res.json() as any;
+  if (!data.ok) return null;
+
+  const match = data.members.find((m: any) =>
+    m.profile?.display_name?.toLowerCase() === nameOrEmail.toLowerCase() ||
+    m.name?.toLowerCase() === nameOrEmail.toLowerCase() ||
+    m.real_name?.toLowerCase() === nameOrEmail.toLowerCase()
+  );
+  return match?.id ?? null;
+}
+
+async function sendSlackDM(slackUserId: string, text: string, blocks?: object[]): Promise<boolean> {
+  // Open a DM channel
+  const openRes = await fetch("https://slack.com/api/conversations.open", {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${SLACK_BOT_TOKEN}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({ users: slackUserId }),
+  });
+  const openData = await openRes.json() as any;
+  if (!openData.ok) {
+    console.error("conversations.open failed", openData.error);
+    return false;
+  }
+
+  const channelId = openData.channel.id;
+
+  // Post message
+  const msgRes = await fetch("https://slack.com/api/chat.postMessage", {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${SLACK_BOT_TOKEN}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({ channel: channelId, text, blocks }),
+  });
+  const msgData = await msgRes.json() as any;
+  if (!msgData.ok) {
+    console.error("chat.postMessage failed", msgData.error);
+    return false;
+  }
+
+  return true;
+}
+
+// ── HTTP REST endpoints ──────────────────────────────────────────────────────
+
+// POST /slack/invite  — send a Slack DM invite
+app.post("/slack/invite", async (req: Request, res: Response) => {
+  const { slackUsername, activityType, fromDisplayName } = req.body as {
+    slackUsername: string;
+    activityType: ActivityType;
+    fromDisplayName: string;
+  };
+
+  if (!slackUsername || !activityType || !fromDisplayName) {
+    res.status(400).json({ ok: false, error: "Missing fields" });
+    return;
+  }
+
+  // Find Slack user
+  const slackUserId = await findSlackUserId(slackUsername);
+  if (!slackUserId) {
+    res.status(404).json({ ok: false, error: "Slack user not found" });
+    return;
+  }
+
+  // Generate a unique join token
+  const token = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  slackInviteLinks.set(token, {
+    activityType,
+    fromDisplayName,
+    expires: Date.now() + 10 * 60 * 1000, // 10 minutes
+  });
+
+  const joinUrl = `${CLIENT_URL}?slackInvite=${token}&from=${encodeURIComponent(fromDisplayName)}`;
+  const gameLabel = activityType === "chess" ? "Chess ♟️" : "Connect 4 🔴";
+
+  const blocks = [
+    {
+      type: "section",
+      text: {
+        type: "mrkdwn",
+        text: `*${fromDisplayName}* is inviting you to play *${gameLabel}* on Breakroom!`,
+      },
+    },
+    {
+      type: "actions",
+      elements: [
+        {
+          type: "button",
+          text: { type: "plain_text", text: "Join Game 🎮" },
+          style: "primary",
+          url: joinUrl,
+        },
+      ],
+    },
+    {
+      type: "context",
+      elements: [{ type: "mrkdwn", text: `This invite expires in 10 minutes.` }],
+    },
+  ];
+
+  const ok = await sendSlackDM(slackUserId, `${fromDisplayName} invited you to play ${gameLabel} on Breakroom! ${joinUrl}`, blocks);
+
+  if (ok) {
+    res.json({ ok: true, token });
+  } else {
+    res.status(500).json({ ok: false, error: "Failed to send Slack message" });
+  }
+});
+
+// GET /slack/invite/:token — validate a join link token
+app.get("/slack/invite/:token", (req: Request, res: Response) => {
+  const link = slackInviteLinks.get(req.params.token);
+  if (!link) {
+    res.status(404).json({ ok: false, error: "Invalid or expired invite" });
+    return;
+  }
+  if (Date.now() > link.expires) {
+    slackInviteLinks.delete(req.params.token);
+    res.status(410).json({ ok: false, error: "Invite expired" });
+    return;
+  }
+  res.json({ ok: true, activityType: link.activityType, fromDisplayName: link.fromDisplayName });
+});
+
+// ── Socket.IO ────────────────────────────────────────────────────────────────
 io.on("connection", (socket) => {
   console.log("connected", socket.id);
 
   socket.on("IDENTIFY", (payload: { displayName: string }) => {
     const userId = socket.id;
-
     const user: UserRecord = {
       userId,
       displayName: payload.displayName,
       presence: "in_lobby",
       socketId: socket.id,
     };
-
     usersByUserId.set(userId, user);
     userIdBySocketId.set(socket.id, userId);
-
     socket.emit("IDENTIFIED", { userId });
-
     console.log("IDENTIFY", socket.id, payload.displayName);
-    console.log("usersByUserId size", usersByUserId.size);
-
     socket.join("lobby");
     broadcastLobby();
   });
@@ -156,10 +315,7 @@ io.on("connection", (socket) => {
     if (!fromUserId) return;
 
     const toUser = usersByUserId.get(payload.toUserId);
-    if (!toUser || toUser.presence !== "in_lobby") {
-      console.log("INVITE_SEND failed: target unavailable", payload.toUserId);
-      return;
-    }
+    if (!toUser || toUser.presence !== "in_lobby") return;
 
     const inviteId = `${fromUserId}->${payload.toUserId}:${Date.now()}`;
     const invite: InviteRecord = {
@@ -169,34 +325,26 @@ io.on("connection", (socket) => {
       activityType: payload.activityType,
       status: "pending",
     };
-
     invitesById.set(inviteId, invite);
-    console.log("INVITE_SEND", invite);
 
     setTimeout(() => {
       const currentInvite = invitesById.get(inviteId);
       if (!currentInvite || (currentInvite.status !== "pending" && currentInvite.status !== "declined")) return;
-
       const wasPending = currentInvite.status === "pending";
       currentInvite.status = "expired";
       invitesById.set(inviteId, currentInvite);
-
       const fromUser = usersByUserId.get(currentInvite.fromUserId);
-      if (fromUser) {
-        io.to(fromUser.socketId).emit("INVITE_RESULT", { inviteId, result: "failed" });
-      }
+      if (fromUser) io.to(fromUser.socketId).emit("INVITE_RESULT", { inviteId, result: "failed" });
       if (wasPending) {
         const toUser = usersByUserId.get(currentInvite.toUserId);
         if (toUser) {
-          const fromDisplayName = usersByUserId.get(currentInvite.fromUserId)?.displayName ?? "Unknown";
           io.to(toUser.socketId).emit("INVITE_EXPIRED", {
             inviteId,
-            fromDisplayName,
+            fromDisplayName: usersByUserId.get(currentInvite.fromUserId)?.displayName ?? "Unknown",
             activityType: currentInvite.activityType,
           });
         }
       }
-      console.log("INVITE expired", inviteId);
     }, 15000);
 
     io.to(toUser.socketId).emit("INVITE_RECEIVED", {
@@ -208,8 +356,6 @@ io.on("connection", (socket) => {
   });
 
   socket.on("INVITE_ACCEPT", (payload: { inviteId: string }) => {
-    console.log("INVITE_ACCEPT received", payload, "from socket", socket.id);
-
     const invite = invitesById.get(payload.inviteId);
     if (!invite || invite.status !== "pending") return;
 
@@ -218,12 +364,10 @@ io.on("connection", (socket) => {
 
     const fromUser = usersByUserId.get(invite.fromUserId);
     const toUser = usersByUserId.get(invite.toUserId);
-
     if (!fromUser || !toUser) return;
 
     const sessionId = `${invite.fromUserId}:${invite.toUserId}:${Date.now()}`;
     const roomName = `session:${sessionId}`;
-
     const initialGame = new Chess();
 
     const session: SessionRecord = {
@@ -238,92 +382,56 @@ io.on("connection", (socket) => {
       c4Turn: "r",
       c4Winner: null,
     };
-
     sessionsById.set(sessionId, session);
 
     io.sockets.sockets.get(fromUser.socketId)?.join(roomName);
     io.sockets.sockets.get(toUser.socketId)?.join(roomName);
 
-    io.to(fromUser.socketId).emit("INVITE_RESULT", {
-      inviteId: invite.inviteId,
-      result: "success",
-    });
-
+    io.to(fromUser.socketId).emit("INVITE_RESULT", { inviteId: invite.inviteId, result: "success" });
     fromUser.presence = "in_session";
     toUser.presence = "in_session";
 
     io.to(fromUser.socketId).emit("SESSION_STARTED", {
-      sessionId,
-      peerUserId: toUser.userId,
-      peerDisplayName: toUser.displayName,
-      activityType: invite.activityType,
-      playerColor: "w",
+      sessionId, peerUserId: toUser.userId, peerDisplayName: toUser.displayName,
+      activityType: invite.activityType, playerColor: "w",
     });
-
     io.to(toUser.socketId).emit("SESSION_STARTED", {
-      sessionId,
-      peerUserId: fromUser.userId,
-      peerDisplayName: fromUser.displayName,
-      activityType: invite.activityType,
-      playerColor: "b",
+      sessionId, peerUserId: fromUser.userId, peerDisplayName: fromUser.displayName,
+      activityType: invite.activityType, playerColor: "b",
     });
 
     if (session.activityType === "chess") {
-      io.to(roomName).emit("CHESS_STATE", {
-        sessionId,
-        fen: session.chessFen,
-        turn: session.turn,
-      });
+      io.to(roomName).emit("CHESS_STATE", { sessionId, fen: session.chessFen, turn: session.turn });
     } else if (session.activityType === "connect4") {
       emitC4State(session);
     }
 
     emitChatState(session);
     broadcastLobby();
-
     console.log("SESSION_STARTED", session);
   });
 
   socket.on("INVITE_DECLINE", (payload: { inviteId: string }) => {
-    console.log("INVITE_DECLINE received", payload, "from socket", socket.id);
-
     const invite = invitesById.get(payload.inviteId);
     if (!invite || invite.status !== "pending") return;
-
     invite.status = "declined";
     invitesById.set(invite.inviteId, invite);
-
-    console.log("INVITE_DECLINE stored for delayed failure", invite.inviteId);
   });
 
-  socket.on("CHESS_MOVE", (payload: {
-    sessionId: string;
-    from: string;
-    to: string;
-    promotion?: "q" | "r" | "b" | "n";
-  }) => {
-    console.log("CHESS_MOVE received", payload, "from socket", socket.id);
-
+  socket.on("CHESS_MOVE", (payload: { sessionId: string; from: string; to: string; promotion?: "q" | "r" | "b" | "n" }) => {
     const userId = userIdBySocketId.get(socket.id);
     if (!userId) return;
-
     const session = sessionsById.get(payload.sessionId);
     if (!session || session.status !== "active") return;
     if (!session.userIds.includes(userId)) return;
 
     const game = new Chess(session.chessFen);
-    const movingColor = game.turn();
-    const expectedUserId = movingColor === "w" ? session.userIds[0] : session.userIds[1];
-
-    if (userId !== expectedUserId) {
-      console.log("CHESS_MOVE rejected: wrong turn");
-      return;
-    }
+    const expectedUserId = game.turn() === "w" ? session.userIds[0] : session.userIds[1];
+    if (userId !== expectedUserId) return;
 
     try {
       game.move({ from: payload.from, to: payload.to, promotion: payload.promotion ?? "q" });
-    } catch (error) {
-      console.log("CHESS_MOVE rejected: illegal move", payload);
+    } catch {
       return;
     }
 
@@ -331,22 +439,14 @@ io.on("connection", (socket) => {
     session.turn = game.turn();
     sessionsById.set(session.sessionId, session);
 
-    const roomName = `session:${session.sessionId}`;
-    io.to(roomName).emit("CHESS_STATE", {
-      sessionId: session.sessionId,
-      fen: session.chessFen,
-      turn: session.turn,
+    io.to(`session:${session.sessionId}`).emit("CHESS_STATE", {
+      sessionId: session.sessionId, fen: session.chessFen, turn: session.turn,
     });
-
-    console.log("CHESS_STATE broadcast", { sessionId: session.sessionId, fen: session.chessFen, turn: session.turn });
   });
 
   socket.on("C4_DROP", (payload: { sessionId: string; col: number }) => {
-    console.log("C4_DROP received", payload, "from socket", socket.id);
-
     const userId = userIdBySocketId.get(socket.id);
     if (!userId) return;
-
     const session = sessionsById.get(payload.sessionId);
     if (!session || session.status !== "active" || session.activityType !== "connect4") return;
     if (!session.userIds.includes(userId)) return;
@@ -369,84 +469,54 @@ io.on("connection", (socket) => {
     session.c4Turn = myColor === "r" ? "y" : "r";
     session.c4Winner = checkC4Winner(board);
     sessionsById.set(session.sessionId, session);
-
     emitC4State(session);
   });
 
   socket.on("C4_REMATCH", (payload: { sessionId: string }) => {
-    console.log("C4_REMATCH received", payload, "from socket", socket.id);
-
     const session = sessionsById.get(payload.sessionId);
     if (!session || session.activityType !== "connect4") return;
-
     session.c4Board = makeC4Board();
     session.c4Turn = "r";
     session.c4Winner = null;
     session.status = "active";
     sessionsById.set(session.sessionId, session);
-
     emitC4State(session);
   });
 
   socket.on("CHAT_SEND", (payload: { sessionId: string; text: string }) => {
-    console.log("CHAT_SEND received", payload, "from socket", socket.id);
-
     const userId = userIdBySocketId.get(socket.id);
     if (!userId) return;
-
     const session = sessionsById.get(payload.sessionId);
     if (!session || session.status !== "active") return;
     if (!session.userIds.includes(userId)) return;
-
     const user = usersByUserId.get(userId);
     if (!user) return;
-
     const text = payload.text.trim();
     if (!text) return;
-
-    session.chatMessages.push({
-      senderUserId: user.userId,
-      senderDisplayName: user.displayName,
-      text,
-    });
-
+    session.chatMessages.push({ senderUserId: user.userId, senderDisplayName: user.displayName, text });
     sessionsById.set(session.sessionId, session);
     emitChatState(session);
   });
 
   socket.on("disconnect", () => {
     const userId = userIdBySocketId.get(socket.id);
-    console.log("disconnect", socket.id, "userId:", userId);
-
-    if (!userId) {
-      broadcastLobby();
-      return;
-    }
+    if (!userId) { broadcastLobby(); return; }
 
     const activeSession = findActiveSessionByUserId(userId);
-
     if (activeSession) {
-      console.log("disconnect ended active session", activeSession.sessionId);
-
       activeSession.status = "ended";
       sessionsById.set(activeSession.sessionId, activeSession);
-
       const [userAId, userBId] = activeSession.userIds;
       const otherUserId = userAId === userId ? userBId : userAId;
       const otherUser = usersByUserId.get(otherUserId);
-
       const roomName = `session:${activeSession.sessionId}`;
-
       usersByUserId.delete(userId);
       userIdBySocketId.delete(socket.id);
-
       if (otherUser) {
         otherUser.presence = "in_lobby";
         io.sockets.sockets.get(otherUser.socketId)?.leave(roomName);
         io.to(otherUser.socketId).emit("SESSION_ENDED", { sessionId: activeSession.sessionId });
       }
-
-      console.log("SESSION_ENDED due to disconnect", activeSession.sessionId);
       sessionsById.delete(activeSession.sessionId);
       broadcastLobby();
       return;
@@ -458,33 +528,21 @@ io.on("connection", (socket) => {
   });
 
   socket.on("SESSION_LEAVE", (payload: { sessionId: string }) => {
-    console.log("SESSION_LEAVE received", payload, "from socket", socket.id);
-
     const session = sessionsById.get(payload.sessionId);
     if (!session || session.status !== "active") return;
-
     session.status = "ended";
     sessionsById.set(session.sessionId, session);
 
     const [userAId, userBId] = session.userIds;
     const userA = usersByUserId.get(userAId);
     const userB = usersByUserId.get(userBId);
-
     const roomName = `session:${session.sessionId}`;
 
-    if (userA) {
-      io.sockets.sockets.get(userA.socketId)?.leave(roomName);
-      io.to(userA.socketId).emit("SESSION_ENDED", { sessionId: session.sessionId });
-    }
-    if (userB) {
-      io.sockets.sockets.get(userB.socketId)?.leave(roomName);
-      io.to(userB.socketId).emit("SESSION_ENDED", { sessionId: session.sessionId });
-    }
-
+    if (userA) { io.sockets.sockets.get(userA.socketId)?.leave(roomName); io.to(userA.socketId).emit("SESSION_ENDED", { sessionId: session.sessionId }); }
+    if (userB) { io.sockets.sockets.get(userB.socketId)?.leave(roomName); io.to(userB.socketId).emit("SESSION_ENDED", { sessionId: session.sessionId }); }
     if (userA) userA.presence = "in_lobby";
     if (userB) userB.presence = "in_lobby";
 
-    console.log("SESSION_ENDED", session.sessionId);
     broadcastLobby();
     sessionsById.delete(session.sessionId);
   });
