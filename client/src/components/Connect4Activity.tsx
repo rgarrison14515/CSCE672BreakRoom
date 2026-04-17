@@ -9,87 +9,69 @@ type Props = {
   onRematch: () => void;
 };
 
-const COLOR: Record<string, string> = {
-  r: "#e74c3c",
-  y: "#f1c40f",
-  null: "#ecf0f1",
-};
-
-const LABEL: Record<string, string> = {
-  r: "Red",
-  y: "Yellow",
-};
+const LABEL: Record<string, string> = { r: "Red", y: "Yellow" };
 
 export default function Connect4Activity({ board, turn, winner, myColor, onDrop, onRematch }: Props) {
   const myTurn = !winner && turn === myColor;
+  const oppColor = myColor === "r" ? "y" : "r";
 
   return (
-    <div style={{ userSelect: "none" }}>
-      <p>
-        You are: <b style={{ color: COLOR[myColor] }}>{LABEL[myColor]}</b>
-      </p>
+    <div className="c4-wrapper">
+      {/* Status bar */}
+      <div className="game-status" style={{ marginBottom: 12 }}>
+        {winner ? null : (
+          <>
+            <div
+              className="turn-indicator"
+              style={{ background: turn === "r" ? "var(--red)" : "var(--yellow)" }}
+            />
+            <span>
+              {myTurn
+                ? <><span className="glow">Your turn</span> — {LABEL[myColor]}</>
+                : <>Opponent's turn — {LABEL[oppColor]}</>}
+            </span>
+          </>
+        )}
+        <span style={{ marginLeft: "auto", fontFamily: "var(--font-mono)", fontSize: 11, color: "var(--text-dim)" }}>
+          You: <span style={{ color: myColor === "r" ? "var(--red)" : "var(--yellow)", fontWeight: 700 }}>
+            {LABEL[myColor]}
+          </span>
+        </span>
+      </div>
 
-      {winner ? (
-        <div style={{ marginBottom: 12, fontSize: 18, fontWeight: "bold" }}>
-          {winner === "draw"
-            ? "It's a draw!"
-            : winner === myColor
-            ? "🎉 You win!"
-            : "😞 You lose!"}
-          <button onClick={onRematch} style={{ marginLeft: 12 }}>
+      {/* Result banner */}
+      {winner && (
+        <div className={`c4-result ${winner === "draw" ? "draw" : winner === myColor ? "win" : "lose"}`}>
+          {winner === "draw" ? "🤝 It's a draw!" : winner === myColor ? "🎉 You win!" : "😞 You lose!"}
+          <button className="btn-ghost btn-sm" onClick={onRematch} style={{ marginLeft: 16 }}>
             Rematch
           </button>
         </div>
-      ) : (
-        <p style={{ fontWeight: "bold" }}>
-          {myTurn
-            ? `Your turn (${LABEL[myColor]})`
-            : `Opponent's turn (${LABEL[turn]})...`}
-        </p>
       )}
 
-      {/* Column drop buttons */}
-      <div style={{ display: "flex", marginBottom: 4 }}>
+      {/* Drop buttons */}
+      <div className="c4-drop-row">
         {Array.from({ length: 7 }, (_, col) => (
           <button
             key={col}
+            className="c4-drop-btn"
             onClick={() => myTurn && onDrop(col)}
             disabled={!myTurn || !!winner}
-            style={{
-              width: 60,
-              marginRight: 4,
-              cursor: myTurn && !winner ? "pointer" : "default",
-              fontSize: 18,
-            }}
+            title={`Drop in column ${col + 1}`}
           >
-            ↓
+            ▼
           </button>
         ))}
       </div>
 
       {/* Board */}
-      <div
-        style={{
-          display: "inline-block",
-          background: "#2980b9",
-          padding: 8,
-          borderRadius: 8,
-        }}
-      >
+      <div className="c4-board">
         {board.map((row, r) => (
-          <div key={r} style={{ display: "flex" }}>
+          <div key={r} className="c4-row">
             {row.map((cell, c) => (
               <div
                 key={c}
-                style={{
-                  width: 60,
-                  height: 60,
-                  borderRadius: "50%",
-                  background: cell ? COLOR[cell] : COLOR["null"],
-                  margin: 4,
-                  transition: "background 0.15s",
-                  boxShadow: "inset 0 2px 6px rgba(0,0,0,0.3)",
-                }}
+                className={`c4-cell ${cell === "r" ? "red" : cell === "y" ? "yellow" : "empty"}`}
               />
             ))}
           </div>
