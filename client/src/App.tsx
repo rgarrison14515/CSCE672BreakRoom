@@ -2,8 +2,9 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { io, Socket } from "socket.io-client";
 import ChessActivity from "./components/ChessActivity";
 import Connect4Activity from "./components/Connect4Activity";
+import YoutubeActivity from "./components/YoutubeActivity";
 
-type ActivityType = "chess" | "connect4";
+type ActivityType = "chess" | "connect4" | "youtube";
 type C4Color = null | "r" | "y";
 
 type PublicUser = {
@@ -18,38 +19,51 @@ type ChatMessage = {
   text: string;
 };
 
+type IncomingInvite = {
+  inviteId: string;
+  fromUserId: string;
+  fromDisplayName: string;
+  activityType: ActivityType;
+};
+
 const SERVER = "http://localhost:3001";
 
-function initials(name: string) {
-  return name.slice(0, 2).toUpperCase();
+function initials(name: string) { return name.slice(0, 2).toUpperCase(); }
+
+function activityLabel(a: ActivityType) {
+  if (a === "chess")    return "♟ Chess";
+  if (a === "connect4") return "🔴 Connect 4";
+  return "▶ YouTube";
 }
 
 export default function App() {
-  const [users, setUsers]           = useState<PublicUser[]>([]);
-  const [me, setMe]                 = useState("");
-  const [myUserId, setMyUserId]     = useState("");
+  const [users, setUsers]       = useState<PublicUser[]>([]);
+  const [me, setMe]             = useState("");
+  const [myUserId, setMyUserId] = useState("");
 
-  const [incomingInvite, setIncomingInvite] = useState<{
-    inviteId: string; fromUserId: string; fromDisplayName: string; activityType: ActivityType;
-  } | null>(null);
+  // ── Multiple pending invites ──────────────────────────────────────────────
+  const [incomingInvites, setIncomingInvites] = useState<IncomingInvite[]>([]);
 
-  const [inviteStatus, setInviteStatus]         = useState("");
+  const [inviteStatus, setInviteStatus]           = useState("");
   const [inviteTargetUserId, setInviteTargetUserId] = useState<string | null>(null);
-  const [selectedActivity, setSelectedActivity] = useState<ActivityType>("chess");
-  const [expiredInviteMessage, setExpiredInviteMessage] = useState("");
+  const [selectedActivity, setSelectedActivity]   = useState<ActivityType>("chess");
+  const [expiredMessages, setExpiredMessages]     = useState<string[]>([]);
 
   const [session, setSession] = useState<{
     sessionId: string; peerUserId: string; peerDisplayName: string;
     activityType: ActivityType; playerColor: "w" | "b";
   } | null>(null);
 
-  const [chessState, setChessState] = useState<{ fen: string; turn: "w" | "b" } | null>(null);
+  const [chessState, setChessState] = useState<{ fen: string; turn: "w"|"b" } | null>(null);
   const [c4State, setC4State]       = useState<{ board: C4Color[][]; turn: "r"|"y"; winner: null|"r"|"y"|"draw" } | null>(null);
+  const [ytState, setYtState]       = useState<{ videoId: string|null; playing: boolean; time: number } | null>(null);
+
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
   const [chatInput, setChatInput]       = useState("");
+  // ── autoscroll: ref on the chat box div ──────────────────────────────────
   const chatBoxRef = useRef<HTMLDivElement>(null);
 
-  // Slack state
+  // Slack
   const [showSlackInvite, setShowSlackInvite] = useState(false);
   const [slackUsername, setSlackUsername]     = useState("");
   const [slackActivity, setSlackActivity]     = useState<ActivityType>("chess");
@@ -67,58 +81,71 @@ export default function App() {
 
   const socket: Socket = useMemo(() => io(SERVER, { transports: ["websocket"] }), []);
 
-  // Auto-scroll chat
+  // ── Autoscroll whenever messages change ───────────────────────────────────
   useEffect(() => {
-    if (chatBoxRef.current) chatBoxRef.current.scrollTop = chatBoxRef.current.scrollHeight;
+    const box = chatBoxRef.current;
+    if (!box) return;
+    box.scrollTop = box.scrollHeight;
   }, [chatMessages]);
 
+  // ── Socket events ─────────────────────────────────────────────────────────
   useEffect(() => {
     const name = `User-${Math.floor(Math.random() * 1000)}`;
     setMe(name);
 
     const onConnect    = () => socket.emit("IDENTIFY", { displayName: name, slackInviteToken: slackInviteTokenRef.current ?? undefined });
     const onLobbyState = (p: { users: PublicUser[] }) => setUsers(p.users);
-    const onIdentified = (p: { userId: string }) => setMyUserId(p.userId);
+    const onIdentified = (p: { userId: string })      => setMyUserId(p.userId);
 
-    const onInviteReceived = (p: { inviteId: string; fromUserId: string; fromDisplayName: string; activityType: ActivityType }) => {
-      setExpiredInviteMessage(""); setIncomingInvite(p);
+    // ── Queue incoming invites instead of replacing ───────────────────────
+    const onInviteReceived = (p: IncomingInvite) => {
+      setIncomingInvites(prev => {
+        // Don't add duplicate inviteIds
+        if (prev.some(i => i.inviteId === p.inviteId)) return prev;
+        return [...prev, p];
+      });
     };
-    const onInviteResult = (p: { result: "success"|"failed" }) => {
+
+    const onInviteResult = (p: { inviteId?: string; result: "success"|"failed" }) => {
       if (p.result === "failed") setInviteStatus("Invitation failed or was declined.");
       else setInviteStatus("");
     };
-    const onInviteExpired = (p: { fromDisplayName: string; activityType: ActivityType }) => {
-      setExpiredInviteMessage(`Invite from ${p.fromDisplayName} for ${p.activityType} expired.`);
-      setIncomingInvite(null);
+
+    // Remove expired invite from the queue
+    const onInviteExpired = (p: { inviteId: string; fromDisplayName: string; activityType: ActivityType }) => {
+      setIncomingInvites(prev => prev.filter(i => i.inviteId !== p.inviteId));
+      setExpiredMessages(prev => [...prev, `Invite from ${p.fromDisplayName} for ${activityLabel(p.activityType)} expired.`]);
     };
+
     const onSessionStarted = (p: { sessionId: string; peerUserId: string; peerDisplayName: string; activityType: ActivityType; playerColor: "w"|"b" }) => {
-      setInviteStatus(""); setSession(p);
+      setInviteStatus(""); setIncomingInvites([]); setSession(p);
     };
     const onSessionEnded = () => {
-      setSession(null); setChessState(null); setC4State(null);
+      setSession(null); setChessState(null); setC4State(null); setYtState(null);
       setInviteStatus(""); setChatMessages([]); setChatInput("");
     };
-    const onChessState = (p: { fen: string; turn: "w"|"b" }) => setChessState({ fen: p.fen, turn: p.turn });
+    const onChessState = (p: { fen: string; turn: "w"|"b" })            => setChessState({ fen: p.fen, turn: p.turn });
     const onC4State    = (p: { board: C4Color[][]; turn: "r"|"y"; winner: null|"r"|"y"|"draw" }) =>
       setC4State({ board: p.board, turn: p.turn, winner: p.winner });
+    const onYtState    = (p: { videoId: string|null; playing: boolean; time: number }) =>
+      setYtState({ videoId: p.videoId, playing: p.playing, time: p.time });
     const onChatState  = (p: { messages: ChatMessage[] }) => setChatMessages(p.messages);
     const onSlackUnavailable = (p: { fromDisplayName: string }) =>
-      setSlackUnavailable(p.fromDisplayName
-        ? `${p.fromDisplayName} is no longer available.`
-        : "This invite link has expired or the host is unavailable.");
+      setSlackUnavailable(p.fromDisplayName ? `${p.fromDisplayName} is no longer available.` : "This invite link has expired or the host is unavailable.");
 
-    socket.on("connect",                   onConnect);
-    socket.on("LOBBY_STATE",               onLobbyState);
-    socket.on("IDENTIFIED",                onIdentified);
-    socket.on("INVITE_RECEIVED",           onInviteReceived);
-    socket.on("INVITE_RESULT",             onInviteResult);
-    socket.on("INVITE_EXPIRED",            onInviteExpired);
-    socket.on("SESSION_STARTED",           onSessionStarted);
-    socket.on("CHESS_STATE",               onChessState);
-    socket.on("C4_STATE",                  onC4State);
-    socket.on("CHAT_STATE",                onChatState);
-    socket.on("SESSION_ENDED",             onSessionEnded);
-    socket.on("SLACK_INVITE_UNAVAILABLE",  onSlackUnavailable);
+    socket.on("connect",                  onConnect);
+    socket.on("LOBBY_STATE",              onLobbyState);
+    socket.on("IDENTIFIED",               onIdentified);
+    socket.on("INVITE_RECEIVED",          onInviteReceived);
+    socket.on("INVITE_RESULT",            onInviteResult);
+    socket.on("INVITE_EXPIRED",           onInviteExpired);
+    socket.on("SESSION_STARTED",          onSessionStarted);
+    socket.on("CHESS_STATE",              onChessState);
+    socket.on("C4_STATE",                 onC4State);
+    socket.on("YT_STATE",                 onYtState);
+    socket.on("CHAT_STATE",               onChatState);
+    socket.on("SESSION_ENDED",            onSessionEnded);
+    socket.on("SLACK_INVITE_UNAVAILABLE", onSlackUnavailable);
     socket.on("connect_error", (e) => console.log("connect_error", e.message));
 
     return () => {
@@ -126,8 +153,9 @@ export default function App() {
       socket.off("IDENTIFIED", onIdentified); socket.off("INVITE_RECEIVED", onInviteReceived);
       socket.off("INVITE_RESULT", onInviteResult); socket.off("INVITE_EXPIRED", onInviteExpired);
       socket.off("SESSION_STARTED", onSessionStarted); socket.off("CHESS_STATE", onChessState);
-      socket.off("C4_STATE", onC4State); socket.off("CHAT_STATE", onChatState);
-      socket.off("SESSION_ENDED", onSessionEnded); socket.off("SLACK_INVITE_UNAVAILABLE", onSlackUnavailable);
+      socket.off("C4_STATE", onC4State); socket.off("YT_STATE", onYtState);
+      socket.off("CHAT_STATE", onChatState); socket.off("SESSION_ENDED", onSessionEnded);
+      socket.off("SLACK_INVITE_UNAVAILABLE", onSlackUnavailable);
     };
   }, [socket]);
 
@@ -141,7 +169,7 @@ export default function App() {
         body: JSON.stringify({ slackUsername: slackUsername.trim(), activityType: slackActivity, fromDisplayName: me, fromUserId: myUserId }),
       });
       const data = await res.json();
-      if (data.ok) { setSlackStatus({ ok: true, msg: `Invite sent to @${slackUsername}! Game starts when they click the link.` }); setSlackUsername(""); }
+      if (data.ok) { setSlackStatus({ ok: true, msg: `Invite sent to @${slackUsername}!` }); setSlackUsername(""); }
       else          setSlackStatus({ ok: false, msg: data.error ?? "Failed to send invite" });
     } catch { setSlackStatus({ ok: false, msg: "Could not reach server" }); }
     finally { setSlackLoading(false); }
@@ -155,19 +183,21 @@ export default function App() {
 
   // ── SESSION VIEW ──────────────────────────────────────────────────────────
   if (session) {
+    const isYoutube = session.activityType === "youtube";
+
     return (
       <div className="app-layout">
         <header className="app-header">
           <div className="app-logo">Break<span>room</span></div>
           <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-            <span style={{ fontSize: 13, color: "var(--text-dim)" }}>Playing with</span>
+            <span style={{ fontSize: 13, color: "var(--text-dim)" }}>With</span>
             <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
               <div className="user-avatar" style={{ width: 28, height: 28, fontSize: 11, borderRadius: 8 }}>
                 {initials(session.peerDisplayName)}
               </div>
               <span style={{ fontWeight: 700, fontSize: 14 }}>{session.peerDisplayName}</span>
             </div>
-            <span className="badge">{session.activityType === "chess" ? "♟ Chess" : "🔴 Connect 4"}</span>
+            <span className="badge">{activityLabel(session.activityType)}</span>
           </div>
           <button className="btn-danger btn-sm" onClick={() => socket.emit("SESSION_LEAVE", { sessionId: session.sessionId })}>
             Leave
@@ -175,74 +205,115 @@ export default function App() {
         </header>
 
         <main className="main-content">
-          <div className="session-layout">
-            {/* Game area */}
-            <div>
-              {chessState && session.activityType === "chess" && (
-                <ChessActivity
-                  fen={chessState.fen}
-                  playerColor={session.playerColor}
-                  turn={chessState.turn}
-                  onMove={(move) => socket.emit("CHESS_MOVE", { sessionId: session.sessionId, ...move })}
+          {/* YouTube gets a wider layout */}
+          <div className={isYoutube ? "" : "session-layout"}>
+            {isYoutube ? (
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 300px", gap: 24, alignItems: "start" }}>
+                <YoutubeActivity
+                  videoId={ytState?.videoId ?? null}
+                  playing={ytState?.playing ?? false}
+                  time={ytState?.time ?? 0}
+                  onLoad={(videoId) => socket.emit("YT_LOAD", { sessionId: session.sessionId, videoId })}
+                  onSync={(playing, time) => socket.emit("YT_SYNC", { sessionId: session.sessionId, playing, time })}
                 />
-              )}
-              {c4State && session.activityType === "connect4" && (
-                <Connect4Activity
-                  board={c4State.board} turn={c4State.turn} winner={c4State.winner}
-                  myColor={session.playerColor === "w" ? "r" : "y"}
-                  onDrop={(col) => socket.emit("C4_DROP", { sessionId: session.sessionId, col })}
-                  onRematch={() => socket.emit("C4_REMATCH", { sessionId: session.sessionId })}
-                />
-              )}
-            </div>
-
-            {/* Sidebar */}
-            <div className="session-sidebar">
-              {/* Players */}
-              <div className="card">
-                <div className="card-title">Players</div>
-                <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-                  {[
-                    { name: me, color: session.playerColor === "w" ? "White ♙" : "Black ♟", isMe: true },
-                    { name: session.peerDisplayName, color: session.playerColor === "w" ? "Black ♟" : "White ♙", isMe: false },
-                  ].map((p) => (
-                    <div key={p.name} style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                {/* Sidebar */}
+                <div className="session-sidebar">
+                  <div className="card">
+                    <div className="card-title">Watching with</div>
+                    <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
                       <div className="user-avatar" style={{ width: 32, height: 32, fontSize: 12, borderRadius: 9 }}>
-                        {initials(p.name)}
+                        {initials(session.peerDisplayName)}
                       </div>
-                      <div>
-                        <div style={{ fontSize: 13, fontWeight: 700 }}>{p.name} {p.isMe && <span style={{ color: "var(--neon)", fontSize: 11 }}>(you)</span>}</div>
-                        <div style={{ fontFamily: "var(--font-mono)", fontSize: 11, color: "var(--text-dim)" }}>{p.color}</div>
-                      </div>
+                      <span style={{ fontWeight: 700, fontSize: 14 }}>{session.peerDisplayName}</span>
                     </div>
-                  ))}
+                  </div>
+                  <div className="card">
+                    <div className="card-title">Chat</div>
+                    <div className="chat-box" ref={chatBoxRef}>
+                      {chatMessages.length === 0
+                        ? <div className="chat-empty">No messages yet…</div>
+                        : chatMessages.map((msg, i) => (
+                            <div key={i} className={`chat-msg${msg.senderUserId === myUserId ? " chat-msg-me" : ""}`}>
+                              <span className="chat-msg-name">{msg.senderDisplayName}</span>{msg.text}
+                            </div>
+                          ))
+                      }
+                    </div>
+                    <div className="chat-input-row">
+                      <input type="text" value={chatInput} placeholder="Say something…"
+                        onChange={(e) => setChatInput(e.target.value)}
+                        onKeyDown={(e) => { if (e.key === "Enter") sendChat(); }}
+                      />
+                      <button className="btn-primary btn-sm" onClick={sendChat}>Send</button>
+                    </div>
+                  </div>
                 </div>
               </div>
+            ) : (
+              <>
+                {/* Game area */}
+                <div>
+                  {chessState && session.activityType === "chess" && (
+                    <ChessActivity
+                      fen={chessState.fen} playerColor={session.playerColor} turn={chessState.turn}
+                      onMove={(move) => socket.emit("CHESS_MOVE", { sessionId: session.sessionId, ...move })}
+                    />
+                  )}
+                  {c4State && session.activityType === "connect4" && (
+                    <Connect4Activity
+                      board={c4State.board} turn={c4State.turn} winner={c4State.winner}
+                      myColor={session.playerColor === "w" ? "r" : "y"}
+                      onDrop={(col) => socket.emit("C4_DROP", { sessionId: session.sessionId, col })}
+                      onRematch={() => socket.emit("C4_REMATCH", { sessionId: session.sessionId })}
+                    />
+                  )}
+                </div>
 
-              {/* Chat */}
-              <div className="card" style={{ flex: 1 }}>
-                <div className="card-title">Chat</div>
-                <div className="chat-box" ref={chatBoxRef}>
-                  {chatMessages.length === 0
-                    ? <div className="chat-empty">No messages yet…</div>
-                    : chatMessages.map((msg, i) => (
-                        <div key={i} className={`chat-msg${msg.senderUserId === myUserId ? " chat-msg-me" : ""}`}>
-                          <span className="chat-msg-name">{msg.senderDisplayName}</span>
-                          {msg.text}
+                {/* Sidebar */}
+                <div className="session-sidebar">
+                  <div className="card">
+                    <div className="card-title">Players</div>
+                    <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                      {[
+                        { name: me, sub: session.playerColor === "w" ? "White ♙" : "Black ♟", isMe: true },
+                        { name: session.peerDisplayName, sub: session.playerColor === "w" ? "Black ♟" : "White ♙", isMe: false },
+                      ].map((p) => (
+                        <div key={p.name} style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                          <div className="user-avatar" style={{ width: 32, height: 32, fontSize: 12, borderRadius: 9 }}>{initials(p.name)}</div>
+                          <div>
+                            <div style={{ fontSize: 13, fontWeight: 700 }}>
+                              {p.name} {p.isMe && <span style={{ color: "var(--neon)", fontSize: 11 }}>(you)</span>}
+                            </div>
+                            <div style={{ fontFamily: "var(--font-mono)", fontSize: 11, color: "var(--text-dim)" }}>{p.sub}</div>
+                          </div>
                         </div>
-                      ))
-                  }
+                      ))}
+                    </div>
+                  </div>
+
+                  <div className="card" style={{ flex: 1 }}>
+                    <div className="card-title">Chat</div>
+                    <div className="chat-box" ref={chatBoxRef}>
+                      {chatMessages.length === 0
+                        ? <div className="chat-empty">No messages yet…</div>
+                        : chatMessages.map((msg, i) => (
+                            <div key={i} className={`chat-msg${msg.senderUserId === myUserId ? " chat-msg-me" : ""}`}>
+                              <span className="chat-msg-name">{msg.senderDisplayName}</span>{msg.text}
+                            </div>
+                          ))
+                      }
+                    </div>
+                    <div className="chat-input-row">
+                      <input type="text" value={chatInput} placeholder="Say something…"
+                        onChange={(e) => setChatInput(e.target.value)}
+                        onKeyDown={(e) => { if (e.key === "Enter") sendChat(); }}
+                      />
+                      <button className="btn-primary btn-sm" onClick={sendChat}>Send</button>
+                    </div>
+                  </div>
                 </div>
-                <div className="chat-input-row">
-                  <input
-                    type="text" value={chatInput} placeholder="Say something…"
-                    onChange={(e) => setChatInput(e.target.value)}
-                    onKeyDown={(e) => { if (e.key === "Enter") sendChat(); }}
-                  />
-                  <button className="btn-primary btn-sm" onClick={sendChat}>Send</button>
-                </div>
-              </div>
-            </div>
+              </>
+            )}
           </div>
         </main>
       </div>
@@ -250,8 +321,6 @@ export default function App() {
   }
 
   // ── LOBBY VIEW ────────────────────────────────────────────────────────────
-  const otherUsers = users.filter(u => u.userId !== myUserId);
-
   return (
     <div className="app-layout">
       <header className="app-header">
@@ -283,35 +352,38 @@ export default function App() {
             <button className="btn-ghost btn-sm" style={{ marginLeft: "auto" }} onClick={() => setInviteStatus("")}>✕</button>
           </div>
         )}
-        {expiredInviteMessage && (
-          <div className="alert alert-warn">
-            ⏱ {expiredInviteMessage}
-            <button className="btn-ghost btn-sm" style={{ marginLeft: "auto" }} onClick={() => setExpiredInviteMessage("")}>✕</button>
+        {expiredMessages.map((msg, i) => (
+          <div key={i} className="alert alert-warn">
+            ⏱ {msg}
+            <button className="btn-ghost btn-sm" style={{ marginLeft: "auto" }}
+              onClick={() => setExpiredMessages(prev => prev.filter((_, j) => j !== i))}>✕</button>
           </div>
-        )}
+        ))}
 
-        {/* Incoming invite */}
-        {incomingInvite && (
-          <div className="alert alert-invite">
+        {/* Incoming invites queue */}
+        {incomingInvites.map((inv) => (
+          <div key={inv.inviteId} className="alert alert-invite">
             <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-              <div className="user-avatar">{initials(incomingInvite.fromDisplayName)}</div>
+              <div className="user-avatar">{initials(inv.fromDisplayName)}</div>
               <div>
-                <div style={{ fontWeight: 700, fontSize: 15 }}>{incomingInvite.fromDisplayName}</div>
+                <div style={{ fontWeight: 700, fontSize: 15 }}>{inv.fromDisplayName}</div>
                 <div style={{ fontSize: 13, color: "var(--text-dim)", marginTop: 2 }}>
-                  wants to play <strong>{incomingInvite.activityType === "chess" ? "♟ Chess" : "🔴 Connect 4"}</strong>
+                  wants to play <strong>{activityLabel(inv.activityType)}</strong>
                 </div>
               </div>
             </div>
             <div style={{ display: "flex", gap: 10 }}>
-              <button className="btn-success btn-sm" onClick={() => { socket.emit("INVITE_ACCEPT", { inviteId: incomingInvite.inviteId }); setIncomingInvite(null); }}>
-                ✓ Accept
-              </button>
-              <button className="btn-ghost btn-sm" onClick={() => { socket.emit("INVITE_DECLINE", { inviteId: incomingInvite.inviteId }); setIncomingInvite(null); }}>
-                Decline
-              </button>
+              <button className="btn-success btn-sm" onClick={() => {
+                socket.emit("INVITE_ACCEPT", { inviteId: inv.inviteId });
+                setIncomingInvites(prev => prev.filter(i => i.inviteId !== inv.inviteId));
+              }}>✓ Accept</button>
+              <button className="btn-ghost btn-sm" onClick={() => {
+                socket.emit("INVITE_DECLINE", { inviteId: inv.inviteId });
+                setIncomingInvites(prev => prev.filter(i => i.inviteId !== inv.inviteId));
+              }}>Decline</button>
             </div>
           </div>
-        )}
+        ))}
 
         <div className="lobby-grid">
           {/* Left: user list */}
@@ -320,18 +392,18 @@ export default function App() {
               Players online <span style={{ color: "var(--neon)", fontFamily: "var(--font-mono)" }}>{users.length}</span>
             </div>
 
-            {/* Invite panel */}
             {inviteTargetUserId && (() => {
               const target = users.find(u => u.userId === inviteTargetUserId);
               return (
                 <div className="invite-panel">
                   <div style={{ fontSize: 14, marginBottom: 12 }}>
-                    Invite <strong>{target?.displayName}</strong> to play:
+                    Invite <strong>{target?.displayName}</strong> to:
                   </div>
-                  <label>Game</label>
+                  <label>Activity</label>
                   <select value={selectedActivity} onChange={(e) => setSelectedActivity(e.target.value as ActivityType)} style={{ marginBottom: 12 }}>
                     <option value="chess">♟ Chess</option>
                     <option value="connect4">🔴 Connect 4</option>
+                    <option value="youtube">▶ Watch YouTube Together</option>
                   </select>
                   <div className="invite-panel-actions">
                     <button className="btn-primary btn-sm" onClick={() => {
@@ -355,10 +427,8 @@ export default function App() {
                 <div key={u.userId} className="user-row">
                   <div className="user-info">
                     <div className="user-avatar">{initials(u.displayName)}</div>
-                    <div>
-                      <div className={`user-name${u.userId === myUserId ? " me" : ""}`}>
-                        {u.displayName}{u.userId === myUserId && " (you)"}
-                      </div>
+                    <div className={`user-name${u.userId === myUserId ? " me" : ""}`}>
+                      {u.displayName}{u.userId === myUserId && " (you)"}
                     </div>
                   </div>
                   <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
@@ -366,10 +436,8 @@ export default function App() {
                       {u.presence === "in_lobby" ? "In Lobby" : "In Game"}
                     </span>
                     {u.userId !== myUserId && u.presence === "in_lobby" && (
-                      <button
-                        className="btn-primary btn-sm"
-                        onClick={() => { setInviteStatus(""); setSelectedActivity("chess"); setInviteTargetUserId(u.userId); }}
-                      >
+                      <button className="btn-primary btn-sm"
+                        onClick={() => { setInviteStatus(""); setSelectedActivity("chess"); setInviteTargetUserId(u.userId); }}>
                         Invite
                       </button>
                     )}
@@ -384,29 +452,28 @@ export default function App() {
             <div className="section-heading">Slack Invite</div>
             <div className="card">
               <p style={{ fontSize: 13, color: "var(--text-dim)", marginBottom: 16, lineHeight: 1.6 }}>
-                Send a direct message to someone on Slack. They'll get a link that drops them straight into your game.
+                Send a direct message to someone on Slack. They'll get a link that drops them straight into your session.
               </p>
-
               {!showSlackInvite ? (
-                <button className="btn-primary" style={{ width: "100%" }} onClick={() => { setShowSlackInvite(true); setSlackStatus(null); }}>
+                <button className="btn-primary" style={{ width: "100%" }}
+                  onClick={() => { setShowSlackInvite(true); setSlackStatus(null); }}>
                   💬 Send Slack Invite
                 </button>
               ) : (
                 <div className="slack-form">
                   <div>
                     <label>Slack username or email</label>
-                    <input
-                      type="text" value={slackUsername} autoFocus
-                      placeholder="jane or jane@example.com"
+                    <input type="text" value={slackUsername} autoFocus placeholder="jane or jane@example.com"
                       onChange={(e) => setSlackUsername(e.target.value)}
                       onKeyDown={(e) => { if (e.key === "Enter") handleSlackInviteSend(); }}
                     />
                   </div>
                   <div>
-                    <label>Game</label>
+                    <label>Activity</label>
                     <select value={slackActivity} onChange={(e) => setSlackActivity(e.target.value as ActivityType)}>
                       <option value="chess">♟ Chess</option>
                       <option value="connect4">🔴 Connect 4</option>
+                      <option value="youtube">▶ Watch YouTube Together</option>
                     </select>
                   </div>
                   <div className="slack-form-row">
