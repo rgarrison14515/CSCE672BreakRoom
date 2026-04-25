@@ -306,6 +306,22 @@ io.on("connection", (socket) => {
     console.log("IDENTIFY", socket.id, payload.displayName);
   });
 
+  socket.on("DISPLAY_NAME_UPDATE", (payload: { displayName: string }) => {
+    const userId = userIdBySocketId.get(socket.id);
+    if (!userId) return;
+
+    const user = usersByUserId.get(userId);
+    if (!user) return;
+
+    const cleaned = payload.displayName.trim().slice(0, 24);
+    if (!cleaned) return;
+
+    user.displayName = cleaned;
+    usersByUserId.set(userId, user);
+
+    broadcastLobby();
+  });
+
   socket.on("INVITE_SEND", (payload: { toUserId: string; activityType: ActivityType }) => {
     const fromUserId = userIdBySocketId.get(socket.id);
     if (!fromUserId) return;

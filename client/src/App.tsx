@@ -39,6 +39,8 @@ function activityLabel(a: ActivityType) {
 export default function App() {
   const [users, setUsers]       = useState<PublicUser[]>([]);
   const [me, setMe]             = useState("");
+  const [isEditingName, setIsEditingName] = useState(false);
+  const [nameDraft, setNameDraft] = useState("");
   const [myUserId, setMyUserId] = useState("");
 
   // ── Multiple pending invites ──────────────────────────────────────────────
@@ -173,6 +175,19 @@ export default function App() {
       else          setSlackStatus({ ok: false, msg: data.error ?? "Failed to send invite" });
     } catch { setSlackStatus({ ok: false, msg: "Could not reach server" }); }
     finally { setSlackLoading(false); }
+  }
+
+
+  function saveDisplayName() {
+    const cleaned = nameDraft.trim();
+    if (!cleaned || cleaned === me) {
+      setIsEditingName(false);
+      return;
+    }
+
+    socket.emit("DISPLAY_NAME_UPDATE", { displayName: cleaned });
+    setMe(cleaned);
+    setIsEditingName(false);
   }
 
   function sendChat() {
@@ -333,7 +348,32 @@ export default function App() {
         <div className="me-card">
           <div className="me-avatar">{initials(me)}</div>
           <div className="me-info">
-            <div className="me-name">{me}</div>
+            {isEditingName ? (
+              <input
+                value={nameDraft}
+                autoFocus
+                maxLength={24}
+                onChange={(e) => setNameDraft(e.target.value)}
+                onBlur={saveDisplayName}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") saveDisplayName();
+                  if (e.key === "Escape") setIsEditingName(false);
+                }}
+                style={{ maxWidth: 180 }}
+              />
+            ) : (
+              <div
+                className="me-name"
+                title="Click to edit display name"
+                style={{ cursor: "pointer" }}
+                onClick={() => {
+                  setNameDraft(me);
+                  setIsEditingName(true);
+                }}
+              >
+                {me}
+              </div>
+            )}
             <div className="me-id">{myUserId || "connecting…"}</div>
           </div>
           <span className="presence-pill lobby">● Online</span>
