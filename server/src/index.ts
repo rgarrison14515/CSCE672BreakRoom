@@ -15,7 +15,10 @@ type PublicUser = {
   presence: "in_lobby" | "in_session";
 };
 
-type UserRecord = PublicUser & { socketId: string };
+type UserRecord = PublicUser & {
+  socketId: string;
+  doNotDisturb: boolean;
+};
 
 type ActivityType = "chess" | "connect4" | "youtube";
 
@@ -281,7 +284,13 @@ io.on("connection", (socket) => {
 
   socket.on("IDENTIFY", (payload: { displayName: string; slackInviteToken?: string }) => {
     const userId = socket.id;
-    const user: UserRecord = { userId, displayName: payload.displayName, presence: "in_lobby", socketId: socket.id };
+    const user: UserRecord = {
+      userId,
+      displayName: payload.displayName,
+      presence: "in_lobby",
+      socketId: socket.id,
+      doNotDisturb: false,
+    };
     usersByUserId.set(userId, user);
     userIdBySocketId.set(socket.id, userId);
     socket.emit("IDENTIFIED", { userId });
@@ -322,6 +331,19 @@ io.on("connection", (socket) => {
     broadcastLobby();
   });
 
+  socket.on("DND_SET", (payload: { enabled: boolean }) => {
+    const userId = userIdBySocketId.get(socket.id);
+    if (!userId) return;
+
+    const user = usersByUserId.get(userId);
+    if (!user) return;
+
+    user.doNotDisturb = payload.enabled;
+    usersByUserId.set(userId, user);
+
+    console.log("DND_SET", user.displayName, payload.enabled);
+  });
+
   socket.on("INVITE_SEND", (payload: { toUserId: string; activityType: ActivityType }) => {
     const fromUserId = userIdBySocketId.get(socket.id);
     if (!fromUserId) return;
@@ -353,11 +375,14 @@ io.on("connection", (socket) => {
       }
     }, 15000);
 
-    io.to(toUser.socketId).emit("INVITE_RECEIVED", {
-      inviteId, fromUserId,
-      fromDisplayName: usersByUserId.get(fromUserId)?.displayName ?? "Unknown",
-      activityType: invite.activityType,
-    });
+    if (!toUser.doNotDisturb) {
+      io.to(toUser.socketId).emit("INVITE_RECEIVED", {
+        inviteId,
+        fromUserId,
+        fromDisplayName: usersByUserId.get(fromUserId)?.displayName ?? "Unknown",
+        activityType: invite.activityType,
+      });
+    }
   });
 
   socket.on("INVITE_ACCEPT", (payload: { inviteId: string }) => {

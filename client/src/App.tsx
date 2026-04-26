@@ -42,6 +42,7 @@ export default function App() {
   const [isEditingName, setIsEditingName] = useState(false);
   const [nameDraft, setNameDraft] = useState("");
   const [myUserId, setMyUserId] = useState("");
+  const [doNotDisturb, setDoNotDisturb] = useState(false);
 
   // ── Multiple pending invites ──────────────────────────────────────────────
   const [incomingInvites, setIncomingInvites] = useState<IncomingInvite[]>([]);
@@ -177,6 +178,12 @@ export default function App() {
     finally { setSlackLoading(false); }
   }
 
+
+  function toggleDoNotDisturb() {
+    const next = !doNotDisturb;
+    setDoNotDisturb(next);
+    socket.emit("DND_SET", { enabled: next });
+  }
 
   function saveDisplayName() {
     const cleaned = nameDraft.trim();
@@ -475,6 +482,17 @@ export default function App() {
                     <span className={`presence-pill ${u.presence === "in_lobby" ? "lobby" : "session"}`}>
                       {u.presence === "in_lobby" ? "In Lobby" : "In Game"}
                     </span>
+
+                    {u.userId === myUserId && (
+                      <button
+                        className={doNotDisturb ? "btn-danger btn-sm" : "btn-ghost btn-sm"}
+                        onClick={toggleDoNotDisturb}
+                        title="Silently block incoming invites"
+                      >
+                        {doNotDisturb ? "DND On" : "DND Off"}
+                      </button>
+                    )}
+
                     {u.userId !== myUserId && u.presence === "in_lobby" && (
                       <button className="btn-primary btn-sm"
                         onClick={() => { setInviteStatus(""); setSelectedActivity("chess"); setInviteTargetUserId(u.userId); }}>
