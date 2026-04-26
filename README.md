@@ -13,5 +13,5 @@ cd client
 npm install
 npm run dev
 
-SLACK_BOT_TOKEN= xoxb-10839215834352-10807531136645-wwoVLFg8w5t8nlILvemYAC1o
+SLACK_BOT_TOKEN= <ask a friend>>
 navigate to http://localhost:5173/ in browser (two tabs)
